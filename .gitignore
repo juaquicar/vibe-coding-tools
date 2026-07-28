@@ -1,0 +1,50 @@
+# IDEs and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+.direnv/
+.venv/
+venv/
+
+# Python caches, tooling and coverage
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+*.egg-info/
+
+# JavaScript dependencies and package-manager diagnostics
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# The reset test intentionally contains a fake OpenCode node_modules tree.
+!tests/fixtures/reset-home/.cache/opencode/node_modules/
+!tests/fixtures/reset-home/.cache/opencode/node_modules/**
+
+# Build output
+build/
+dist/
+
+# Runtime logs and temporary files
+*.log
+*.tmp
+tests/tmp/

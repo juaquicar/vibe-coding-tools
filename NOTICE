@@ -1,0 +1,21 @@
+vibe-coding-tools
+Copyright 2026 Stratos Global Solutions S.L.
+
+This product includes software developed at Stratos Global Solutions S.L.
+
+vibe-coding-tools installs and configures third-party software. It does not
+redistribute it. Each component is downloaded from its own upstream source at
+install time and remains under its own licence:
+
+  Claude Code       Anthropic          proprietary, see anthropic.com
+  Codex CLI         OpenAI             see the package licence
+  OpenCode          opencode-ai        MIT
+  Superpowers       obra               MIT
+  Caveman           JuliusBrussee      MIT
+  CodeGraph         colbymchenry       MIT
+  Context7          Upstash            MIT
+  Docker Engine     Docker Inc.        Apache-2.0
+  GitHub CLI        GitHub Inc.        MIT
+
+Running `ai install` fetches software from third parties. Review
+manifest/components.yaml to see exactly what will be installed and from where.

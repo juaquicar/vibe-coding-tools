@@ -1,0 +1,49 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pyyaml
+      - name: Gate the release on a clean pipeline
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y shellcheck bats
+          make manifest-check
+          make shellcheck
+          ./tests/run.sh
+      - name: Extract the changelog section for this tag
+        id: notes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            $0 ~ "^## \\[" v "\\]" { grab = 1; next }
+            grab && /^## \[/ { exit }
+            grab { print }
+          ' CHANGELOG.md > /tmp/notes.md
+          test -s /tmp/notes.md || echo "See CHANGELOG.md" > /tmp/notes.md
+      - name: Build the tarball
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          tar --exclude-vcs --exclude='.github' \
+              -czf "vibe-coding-tools-${version}.tar.gz" \
+              --transform "s,^,vibe-coding-tools-${version}/," *
+          sha256sum "vibe-coding-tools-${version}.tar.gz" > "vibe-coding-tools-${version}.tar.gz.sha256"
+      - uses: softprops/action-gh-release@v2
+        with:
+          body_path: /tmp/notes.md
+          files: |
+            vibe-coding-tools-*.tar.gz
+            vibe-coding-tools-*.tar.gz.sha256

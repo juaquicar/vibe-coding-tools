@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+case "$*" in
+  "plugin list --json")
+    printf '[{"id":"demo@fixture","scope":"user"}]\n'
+    ;;
+  "plugin uninstall demo@fixture --scope user --prune --yes")
+    printf '%s\n' "$*" >>"${FAKE_AGENT_LOG:?}"
+    ;;
+  "--version")
+    printf '2.1.220 (Claude Code)\n'
+    ;;
+  *)
+    printf 'unexpected claude invocation: %s\n' "$*" >&2
+    exit 1
+    ;;
+esac

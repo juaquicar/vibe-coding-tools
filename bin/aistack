@@ -1,0 +1,1030 @@
+#!/usr/bin/env bash
+# bin/aistack — the vibe-coding-tools command line.
+#
+# Installed as `aistack`, with an `ai` symlink by default. The real binary is
+# named `aistack` because `ai` is a two-letter name in a crowded namespace and
+# collides easily; set AI_CLI_NAME to change the symlink.
+#
+# Everything here is orchestration. Component knowledge lives in the manifest,
+# install mechanics live in the backends, agent quirks live in the harness
+# adapters. If you find yourself adding an `if [[ $id == ... ]]` to this file,
+# it belongs somewhere else.
+
+set -Eeuo pipefail
+
+_self="${BASH_SOURCE[0]}"
+while [[ -L "$_self" ]]; do
+  _dir="$(cd -P "$(dirname "$_self")" && pwd)"
+  _self="$(readlink "$_self")"
+  [[ "$_self" != /* ]] && _self="${_dir}/${_self}"
+done
+_BIN_DIR="$(cd -P "$(dirname "$_self")" && pwd)"
+unset _self _dir
+
+# shellcheck source=lib/common.sh
+. "${_BIN_DIR}/../lib/common.sh"
+# shellcheck source=lib/version.sh
+. "$AI_LIB_DIR/version.sh"
+# shellcheck source=lib/progress.sh
+. "$AI_LIB_DIR/progress.sh"
+# shellcheck source=lib/rollback.sh
+. "$AI_LIB_DIR/rollback.sh"
+# shellcheck source=lib/state.sh
+. "$AI_LIB_DIR/state.sh"
+# shellcheck source=lib/manifest.sh
+. "$AI_LIB_DIR/manifest.sh"
+# shellcheck source=lib/deps.sh
+. "$AI_LIB_DIR/deps.sh"
+# shellcheck source=lib/harness.sh
+. "$AI_LIB_DIR/harness.sh"
+# shellcheck source=lib/backend.sh
+. "$AI_LIB_DIR/backend.sh"
+# shellcheck source=lib/reset.sh
+. "$AI_LIB_DIR/reset.sh"
+
+common_trap_install
+
+# ---------------------------------------------------------------------------
+# Global option parsing
+# ---------------------------------------------------------------------------
+
+HARNESS_SPEC=""
+FROM_LOCK=0
+CONTINUE_ON_ERROR=0
+
+usage() {
+  cat <<HELPTEXT
+$(version_banner)
+A package manager for AI coding agents on Ubuntu.
+
+USAGE
+  ${AI_CLI_NAME} <command> [arguments] [options]
+
+COMMANDS
+  install [<component>|<profile>|full]   Install components, dependencies first
+  remove <component>...                  Remove components
+  update [<component>...]                Update what is installed
+  repair                                 Reinstall anything that fails verification
+  doctor                                 Health matrix: component x harness
+  status                                 What is installed, from the state file
+  list [--type <t>] [--tag <t>]          List known components
+  search <term>                          Search components
+  why <component>                        Explain the dependency graph
+  versions                               Version of every installed component
+  index [<path>]                         Build a CodeGraph index for a project
+  harness [list|detect]                  Inspect coding agents
+  config [get|set|path] [k] [v]          Read and write configuration
+  clean [--all]                          Clear caches and old logs
+  reset [--apply]                        Reset global agent extensions (preview first)
+  export <file> / import <file>          Move a stack between machines
+  completion <bash|zsh>                  Print a shell completion script
+  self-update                            Update vibe-coding-tools itself
+  version                                Print the version
+
+OPTIONS
+  --harness <spec>     all | comma-separated ids (default: every detected agent)
+  --profile <name>     $(manifest_profiles 2>/dev/null | tr '\n' ' ')
+  --from-lock          Install exactly what ai.lock pins
+  -n, --dry-run        Show what would happen, change nothing
+  -y, --yes            Assume yes for every prompt
+  -k, --continue       Keep going after a component fails
+  -v, --verbose        Debug logging
+  -q, --quiet          Warnings and errors only
+  --no-color           Disable ANSI colour
+  --allow-remote-scripts   Permit vendor curl|bash installers (off by default)
+
+EXAMPLES
+  ${AI_CLI_NAME} install developer
+  ${AI_CLI_NAME} install caveman --harness=claude-code,opencode
+  ${AI_CLI_NAME} install --from-lock
+  ${AI_CLI_NAME} doctor
+  ${AI_CLI_NAME} why superpowers
+  ${AI_CLI_NAME} remove codegraph --harness=all
+  ${AI_CLI_NAME} reset
+
+Docs: ${AI_ROOT}/docs/CLI.md
+HELPTEXT
+}
+
+parse_global_opts() {
+  local -a rest=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --harness)
+        HARNESS_SPEC="$2"
+        shift 2
+        ;;
+      --harness=*)
+        HARNESS_SPEC="${1#*=}"
+        shift
+        ;;
+      --profile)
+        PROFILE_NAME="$2"
+        shift 2
+        ;;
+      --profile=*)
+        PROFILE_NAME="${1#*=}"
+        shift
+        ;;
+      --from-lock)
+        FROM_LOCK=1
+        shift
+        ;;
+      -n | --dry-run)
+        AI_DRY_RUN=1
+        shift
+        ;;
+      -y | --yes)
+        AI_ASSUME_YES=1
+        shift
+        ;;
+      -k | --continue)
+        CONTINUE_ON_ERROR=1
+        shift
+        ;;
+      -v | --verbose)
+        AI_LOG_LEVEL=debug
+        shift
+        ;;
+      -q | --quiet)
+        AI_LOG_LEVEL=warn
+        shift
+        ;;
+      --no-color)
+        AI_NO_COLOR=1
+        colors_init
+        shift
+        ;;
+      --allow-remote-scripts)
+        AI_ALLOW_REMOTE_SCRIPTS=1
+        shift
+        ;;
+      --)
+        shift
+        rest+=("$@")
+        break
+        ;;
+      *)
+        rest+=("$1")
+        shift
+        ;;
+    esac
+  done
+  export AI_DRY_RUN AI_ASSUME_YES AI_LOG_LEVEL AI_ALLOW_REMOTE_SCRIPTS
+  ARGS=("${rest[@]+"${rest[@]}"}")
+}
+
+# ---------------------------------------------------------------------------
+# Install
+# ---------------------------------------------------------------------------
+
+# component_install_verified <id> [harness] — verify both user-visible
+# behaviour and, where supported, ownership by the selected backend.
+component_install_verified() {
+  local id="$1" harness="${2:-system}" backend fn
+  component_verify "$id" "$harness" || return 1
+  backend="$(manifest_backend "$id")"
+  backend_load "$backend"
+  fn="$(backend_fn "$backend" managed)"
+  if declare -F "$fn" >/dev/null 2>&1; then
+    "$fn" "$id" "$harness"
+  fi
+}
+
+# install_one <id> — install a single component across the selected harnesses.
+# Returns 0 on success, 1 on failure. Never dies, so --continue works.
+install_one() {
+  local id="$1"
+  local backend type
+  backend="$(manifest_backend "$id")"
+  type="$(manifest_type "$id")"
+
+  AI_LOG_COMPONENT="$id"
+
+  # Harness-independent component: one shot, pseudo-harness "system".
+  if ! manifest_is_harness_scoped "$id"; then
+    if state_is_installed "$id" "system" && component_install_verified "$id"; then
+      log_debug "${id}: already installed and verified"
+      return 0
+    fi
+    manifest_needs_sudo "$id" && require_sudo
+
+    local hook
+    hook="$(manifest_hook "$id" pre-install)"
+    if [[ -n "$hook" ]] && ! run_hook "$hook" "$id" ""; then
+      state_write "$id" "system" "unknown" "$backend" "failed"
+      return 1
+    fi
+
+    if ! backend_call "$backend" install "$id"; then
+      state_write "$id" "system" "unknown" "$backend" "failed"
+      return 1
+    fi
+
+    hook="$(manifest_hook "$id" post-install)"
+    if [[ -n "$hook" ]] && ! run_hook "$hook" "$id" ""; then
+      state_write "$id" "system" "unknown" "$backend" "failed"
+      return 1
+    fi
+
+    if [[ "$AI_DRY_RUN" != "1" ]] && ! component_install_verified "$id"; then
+      log_error "${id}: install command finished but verification failed"
+      state_write "$id" "system" "unknown" "$backend" "failed"
+      return 1
+    fi
+
+    local ver
+    ver="$(backend_call "$backend" version "$id" 2>/dev/null || printf 'unknown')"
+    state_write "$id" "system" "$ver" "$backend" "installed"
+
+    if manifest_needs_relogin "$id"; then
+      RELOGIN_NEEDED+=("$id")
+    fi
+    return 0
+  fi
+
+  # Harness-scoped component: iterate the selection, intersected with the
+  # harnesses this component actually declares support for.
+  local -a targets=()
+  local h
+  while IFS= read -r h; do
+    [[ -z "$h" ]] && continue
+    if manifest_harness_declared "$id" "$h"; then
+      targets+=("$h")
+    else
+      log_debug "${id}: no support declared for harness ${h}"
+    fi
+  done < <(harness_selection "$HARNESS_SPEC")
+
+  if [[ ${#targets[@]} -eq 0 ]]; then
+    log_warn "${id}: none of the selected agents are installed or supported"
+    return 0
+  fi
+
+  local rc=0
+  for h in "${targets[@]}"; do
+    if state_is_installed "$id" "$h" && component_install_verified "$id" "$h"; then
+      log_debug "${id}@${h}: already installed"
+      continue
+    fi
+    # A previously manual integration may become scriptable in a newer
+    # manifest. Clear that stale marker before trying the newly supported path
+    # so a successful install can be recorded as installed.
+    if [[ "$AI_DRY_RUN" != "1" ]] &&
+      [[ "$(state_get "$id" "$h" status)" == "manual" ]] &&
+      manifest_harness_scriptable "$id" "$h"; then
+      state_forget "$id" "$h"
+    fi
+    local hook
+    hook="$(manifest_hook "$id" pre-install)"
+    if [[ -n "$hook" ]] && ! run_hook "$hook" "$id" "$h"; then
+      log_error "${id}@${h}: pre-install hook failed"
+      state_write "$id" "$h" "unknown" "$backend" "failed"
+      rc=1
+      continue
+    fi
+
+    if backend_call "$backend" install "$id" "$h"; then
+      hook="$(manifest_hook "$id" post-install)"
+      if [[ -n "$hook" ]] && ! run_hook "$hook" "$id" "$h"; then
+        log_error "${id}@${h}: post-install hook failed"
+        state_write "$id" "$h" "unknown" "$backend" "failed"
+        rc=1
+        continue
+      fi
+      # A manual row is written by the backend itself; do not overwrite it.
+      if [[ "$(state_get "$id" "$h" status)" == "manual" ]]; then
+        continue
+      fi
+      if [[ "$AI_DRY_RUN" != "1" ]] && ! component_install_verified "$id" "$h"; then
+        log_error "${id}@${h}: install command finished but verification failed"
+        state_write "$id" "$h" "unknown" "$backend" "failed"
+        rc=1
+      else
+        state_write "$id" "$h" "$(manifest_version_spec "$id")" "$backend" "installed"
+      fi
+    else
+      log_error "${id}@${h}: install failed"
+      state_write "$id" "$h" "unknown" "$backend" "failed"
+      rc=1
+    fi
+  done
+  return "$rc"
+}
+
+# run_hook <path> <component> <harness>
+run_hook() {
+  local hook="$1" id="$2" harness="$3"
+  log_debug "hook: ${hook}"
+  if [[ "$AI_DRY_RUN" == "1" ]]; then
+    printf '%s  [dry-run] hook %s%s\n' "$C_GREY" "$(basename "$(dirname "$hook")")/$(basename "$hook")" "$C_RESET" >&2
+    return 0
+  fi
+  AI_COMPONENT="$id" AI_HARNESS="$harness" bash "$hook"
+}
+
+cmd_install() {
+  local -a requested=()
+  PROFILE_NAME="${PROFILE_NAME:-}"
+
+  if ((FROM_LOCK)); then
+    log_step "Installing from lockfile: $AI_LOCKFILE"
+    while IFS= read -r c; do requested+=("$c"); done < <(lockfile_components)
+  elif [[ ${#ARGS[@]} -eq 0 && -z "$PROFILE_NAME" ]]; then
+    PROFILE_NAME="developer"
+  fi
+
+  local arg
+  for arg in "${ARGS[@]+"${ARGS[@]}"}"; do
+    if manifest_profile_exists "$arg"; then
+      PROFILE_NAME="$arg"
+    else
+      requested+=("$arg")
+    fi
+  done
+
+  if [[ -n "$PROFILE_NAME" ]]; then
+    manifest_profile_exists "$PROFILE_NAME" ||
+      die "unknown profile '${PROFILE_NAME}' (available: $(manifest_profiles | tr '\n' ' '))"
+    log_step "Profile: ${PROFILE_NAME}"
+    while IFS= read -r c; do requested+=("$c"); done < <(manifest_profile "$PROFILE_NAME")
+    if [[ -z "$HARNESS_SPEC" ]]; then
+      local ph
+      ph="$(manifest_profile_harnesses "$PROFILE_NAME" | paste -sd, -)"
+      [[ -n "$ph" ]] && HARNESS_SPEC="$ph"
+    fi
+  fi
+
+  [[ ${#requested[@]} -eq 0 ]] && die "nothing to install"
+
+  require_linux
+  ensure_dirs
+  state_init
+  lock_acquire
+  rollback_begin "install"
+
+  log_step "Resolving dependencies"
+  # NOTE: deps_resolve must NOT be consumed through a process substitution.
+  # `die` inside `< <(...)` exits only the subshell, so a fatal error there is
+  # invisible to the caller and the install would carry on with an empty plan.
+  # Command substitution makes the failure observable.
+  local plan_raw
+  if ! plan_raw="$(deps_resolve "${requested[@]}")"; then
+    die "dependency resolution failed"
+  fi
+  local -a plan=()
+  while IFS= read -r c; do
+    [[ -n "$c" ]] && plan+=("$c")
+  done <<<"$plan_raw"
+  [[ ${#plan[@]} -eq 0 ]] && die "resolved an empty install plan"
+  log_ok "${#plan[@]} components in install order"
+  log_debug "plan: ${plan[*]}"
+
+  # Warn once, up front, about anything that will need the remote-script escape
+  # hatch, instead of failing three components into a long install.
+  if [[ "$AI_ALLOW_REMOTE_SCRIPTS" != "1" ]]; then
+    local -a needs_script=()
+    for id in "${plan[@]}"; do
+      [[ "$(manifest_backend "$id")" == "script" ]] && needs_script+=("$id")
+    done
+    if [[ ${#needs_script[@]} -gt 0 ]]; then
+      log_warn "these install from a vendor script: $(join_by ', ' "${needs_script[@]}")"
+      log_warn "they will be skipped unless you pass --allow-remote-scripts"
+    fi
+  fi
+
+  if [[ "$AI_DRY_RUN" == "1" ]]; then
+    printf '\n%sDry run — nothing will be changed%s\n\n' "$C_YELLOW" "$C_RESET"
+  fi
+
+  local -a succeeded=() failed=() skipped=()
+  RELOGIN_NEEDED=()
+
+  log_step "Installing"
+  progress_start "${#plan[@]}"
+  local id
+  for id in "${plan[@]}"; do
+    progress_tick "$id"
+    if install_one "$id"; then
+      succeeded+=("$id")
+    else
+      failed+=("$id")
+      if ((CONTINUE_ON_ERROR)); then
+        log_warn "continuing after failure of ${id} (--continue)"
+      else
+        progress_done
+        log_error "aborting; re-run with --continue to skip failures"
+        log_error "already installed: ${succeeded[*]:-none}"
+        rollback_commit # keep what succeeded; do not unwind good work
+        exit 1
+      fi
+    fi
+  done
+  progress_done
+  unset AI_LOG_COMPONENT
+
+  rollback_commit
+  lockfile_write
+
+  # ---- summary ----
+  log_step "Summary"
+  printf '  %s%s installed:%s %d\n' "$C_GREEN" "$G_OK" "$C_RESET" "${#succeeded[@]}"
+  [[ ${#failed[@]} -gt 0 ]] &&
+    printf '  %s%s failed:%s %s\n' "$C_RED" "$G_FAIL" "$C_RESET" "$(join_by ', ' "${failed[@]}")"
+
+  local -a manual=()
+  while IFS= read -r row; do
+    manual+=("$row")
+  done < <(state_rows | awk -F'\t' '$5 == "manual" {print $1 "@" $2}')
+  if [[ ${#manual[@]} -gt 0 ]]; then
+    printf '  %s%s manual steps required:%s %s\n' \
+      "$C_YELLOW" "$G_MANUAL" "$C_RESET" "$(join_by ', ' "${manual[@]}")"
+    printf '      run: %s doctor\n' "$AI_CLI_NAME"
+  fi
+
+  if [[ ${#RELOGIN_NEEDED[@]} -gt 0 ]]; then
+    printf '\n  %sRestart your shell (or log out and back in) for: %s%s\n' \
+      "$C_YELLOW" "$(join_by ', ' "${RELOGIN_NEEDED[@]}")" "$C_RESET"
+  fi
+
+  [[ ${#failed[@]} -gt 0 ]] && return 1
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Remove
+# ---------------------------------------------------------------------------
+
+cmd_remove() {
+  [[ ${#ARGS[@]} -eq 0 ]] && die "usage: ${AI_CLI_NAME} remove <component>..."
+  state_init
+  lock_acquire
+  rollback_begin "remove"
+
+  local id
+  for id in "${ARGS[@]}"; do
+    manifest_exists "$id" || die "unknown component '${id}'"
+
+    # Refuse to orphan a dependant unless the user insists.
+    local -a dependants=()
+    local d
+    while IFS= read -r d; do
+      [[ -z "$d" ]] && continue
+      state_is_installed "$d" && dependants+=("$d")
+      state_harnesses_for "$d" | grep -q . && dependants+=("$d")
+    done < <(deps_reverse "$id")
+    if [[ ${#dependants[@]} -gt 0 ]]; then
+      log_warn "${id} is required by: $(join_by ', ' "${dependants[@]}")"
+      confirm "Remove anyway?" || {
+        log_info "skipping ${id}"
+        continue
+      }
+    fi
+
+    local backend
+    backend="$(manifest_backend "$id")"
+    AI_LOG_COMPONENT="$id"
+
+    if manifest_is_harness_scoped "$id"; then
+      local h any=0
+      while IFS= read -r h; do
+        [[ -z "$h" ]] && continue
+        any=1
+        log_info "removing ${id} from $(harness_name "$h")"
+        local hook
+        hook="$(manifest_hook "$id" pre-remove)"
+        [[ -n "$hook" ]] && run_hook "$hook" "$id" "$h"
+        backend_call "$backend" remove "$id" "$h" || log_warn "${id}@${h}: removal reported an error"
+        state_forget "$id" "$h"
+      done < <(harness_selection "$HARNESS_SPEC")
+      ((any)) || log_warn "${id}: no matching harness"
+    else
+      log_info "removing ${id}"
+      local hook
+      hook="$(manifest_hook "$id" pre-remove)"
+      [[ -n "$hook" ]] && run_hook "$hook" "$id" ""
+      backend_call "$backend" remove "$id" || log_warn "${id}: removal reported an error"
+      hook="$(manifest_hook "$id" post-remove)"
+      [[ -n "$hook" ]] && run_hook "$hook" "$id" ""
+      state_forget "$id"
+    fi
+    log_ok "${id} removed"
+  done
+
+  unset AI_LOG_COMPONENT
+  rollback_commit
+  lockfile_write
+}
+
+# ---------------------------------------------------------------------------
+# Update
+# ---------------------------------------------------------------------------
+
+cmd_update() {
+  state_init
+  lock_acquire
+  rollback_begin "update"
+
+  local -a targets=()
+  if [[ ${#ARGS[@]} -gt 0 ]]; then
+    targets=("${ARGS[@]}")
+  else
+    while IFS= read -r c; do targets+=("$c"); done < <(state_components)
+  fi
+  [[ ${#targets[@]} -eq 0 ]] && {
+    log_warn "nothing is installed; run '${AI_CLI_NAME} install' first"
+    return 0
+  }
+
+  log_step "Updating ${#targets[@]} installed components"
+  progress_start "${#targets[@]}"
+  local id updated=0 failed=0
+  for id in "${targets[@]}"; do
+    progress_tick "$id"
+    manifest_exists "$id" || {
+      log_warn "${id} is in the state file but not in the manifest; skipping"
+      continue
+    }
+    AI_LOG_COMPONENT="$id"
+    local backend
+    backend="$(manifest_backend "$id")"
+    manifest_needs_sudo "$id" && require_sudo
+
+    if manifest_is_harness_scoped "$id"; then
+      local h
+      while IFS= read -r h; do
+        [[ -z "$h" ]] && continue
+        backend_call "$backend" update "$id" "$h" || failed=$((failed + 1))
+      done < <(state_harnesses_for "$id")
+    else
+      if backend_call "$backend" update "$id"; then
+        state_write "$id" "system" "$(backend_call "$backend" version "$id" 2>/dev/null || echo unknown)" \
+          "$backend" "installed"
+        updated=$((updated + 1))
+      else
+        failed=$((failed + 1))
+      fi
+    fi
+  done
+  progress_done
+  unset AI_LOG_COMPONENT
+
+  rollback_commit
+  lockfile_write
+  log_step "Summary"
+  printf '  %s%s updated:%s %d   %s%s failed:%s %d\n' \
+    "$C_GREEN" "$G_OK" "$C_RESET" "$updated" "$C_RED" "$G_FAIL" "$C_RESET" "$failed"
+}
+
+# ---------------------------------------------------------------------------
+# Doctor — the matrix
+# ---------------------------------------------------------------------------
+
+cmd_doctor() {
+  state_init
+  version_banner
+  printf '%s%s%s\n\n' "$C_DIM" "$(version_string)" "$C_RESET"
+
+  # ---- harnesses ----
+  log_step "Coding agents"
+  local h
+  while IFS= read -r h; do
+    if harness_detect "$h" >/dev/null 2>&1; then
+      printf '  %s%s%s %-14s %-10s %s%s%s\n' \
+        "$C_GREEN" "$G_OK" "$C_RESET" "$(harness_name "$h")" \
+        "$(harness_version "$h")" "$C_GREY" "$(harness_config_path "$h")" "$C_RESET"
+    else
+      local harness_status
+      harness_status="$(state_get "$h" "system" status)"
+      if [[ "$harness_status" == "installed" || "$harness_status" == "failed" ]]; then
+        printf '  %s%s%s %-14s %snot installed%s\n' \
+          "$C_RED" "$G_FAIL" "$C_RESET" "$(harness_name "$h")" "$C_GREY" "$C_RESET"
+      else
+        printf '  %s-%s %-14s %snot selected%s\n' \
+          "$C_GREY" "$C_RESET" "$(harness_name "$h")" "$C_GREY" "$C_RESET"
+      fi
+    fi
+  done < <(harness_all)
+
+  # ---- harness-independent tools ----
+  log_step "Tools"
+  local id ok=0 missing=0 optional=0
+  while IFS= read -r id; do
+    manifest_is_harness_scoped "$id" && continue
+    [[ "$(manifest_backend "$id")" == "none" && "$(manifest_bin "$id")" == "" ]] && continue
+    if component_verify "$id"; then
+      printf '  %s%s%s %-18s %-12s %s%s%s\n' \
+        "$C_GREEN" "$G_OK" "$C_RESET" "$id" "$(component_version "$id")" \
+        "$C_GREY" "$(component_path "$id")" "$C_RESET"
+      ok=$((ok + 1))
+    else
+      local component_status
+      component_status="$(state_get "$id" "system" status)"
+      if [[ "$component_status" == "installed" || "$component_status" == "failed" ]]; then
+        printf '  %s%s%s %-18s %s%s%s\n' \
+          "$C_RED" "$G_FAIL" "$C_RESET" "$id" "$C_GREY" "missing" "$C_RESET"
+        missing=$((missing + 1))
+      else
+        printf '  %s-%s %-18s %s%s%s\n' \
+          "$C_GREY" "$C_RESET" "$id" "$C_GREY" "not selected" "$C_RESET"
+        optional=$((optional + 1))
+      fi
+    fi
+  done < <(manifest_ids)
+
+  # ---- the matrix ----
+  log_step "Agent extensions (component x agent)"
+  local -a harnesses=()
+  while IFS= read -r h; do harnesses+=("$h"); done < <(harness_all)
+
+  printf '  %-16s' ''
+  for h in "${harnesses[@]}"; do printf '%-14s' "$h"; done
+  printf '\n'
+
+  local manual=0
+  while IFS= read -r id; do
+    manifest_is_harness_scoped "$id" || continue
+    printf '  %-16s' "$id"
+    for h in "${harnesses[@]}"; do
+      local label colour
+      if ! manifest_harness_declared "$id" "$h"; then
+        label="n/a" colour="$C_GREY"
+      elif ! harness_detect "$h" >/dev/null 2>&1; then
+        label="no agent" colour="$C_GREY"
+      elif component_verify "$id" "$h"; then
+        label="${G_OK} ok" colour="$C_GREEN"
+      elif [[ "$(state_get "$id" "$h" status)" == "manual" ]] ||
+        ! manifest_harness_scriptable "$id" "$h"; then
+        label="${G_MANUAL} manual" colour="$C_YELLOW"
+        manual=$((manual + 1))
+      else
+        label="${G_FAIL} missing" colour="$C_RED"
+      fi
+      # Pad the plain label first: printf widths count bytes, so padding a
+      # string that already contains ANSI escapes or multibyte glyphs drifts.
+      printf '%s%s%s' "$colour" "$label" "$C_RESET"
+      printf '%*s' "$((14 - ${#label}))" ''
+    done
+    printf '\n'
+  done < <(manifest_ids)
+
+  # ---- manual step detail ----
+  if ((manual > 0)); then
+    log_step "Manual steps"
+    while IFS= read -r id; do
+      manifest_is_harness_scoped "$id" || continue
+      for h in "${harnesses[@]}"; do
+        manifest_harness_declared "$id" "$h" || continue
+        manifest_harness_scriptable "$id" "$h" && continue
+        harness_detect "$h" >/dev/null 2>&1 || continue
+        printf '  %s%s %s on %s%s\n' "$C_YELLOW" "$G_MANUAL" "$id" "$(harness_name "$h")" "$C_RESET"
+        printf '      %s\n' "$(manifest_harness_note "$id" "$h")"
+      done
+    done < <(manifest_ids)
+  fi
+
+  log_step "Result"
+  printf '  %d present, %d missing, %d not selected, %d needing manual steps\n' \
+    "$ok" "$missing" "$optional" "$manual"
+  ((missing > 0)) && printf '  run: %s repair\n' "$AI_CLI_NAME"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Repair, status, list, search, versions
+# ---------------------------------------------------------------------------
+
+cmd_repair() {
+  state_init
+  log_step "Verifying installed components"
+  local -a broken=()
+  local id
+  while IFS= read -r id; do
+    manifest_exists "$id" || continue
+    if manifest_is_harness_scoped "$id"; then
+      local h
+      while IFS= read -r h; do
+        [[ -z "$h" ]] && continue
+        component_install_verified "$id" "$h" || broken+=("$id")
+      done < <(state_harnesses_for "$id")
+    else
+      component_install_verified "$id" || broken+=("$id")
+    fi
+  done < <(state_components)
+
+  # A failed row is itself repair work. Do not require it to pass verification
+  # first: re-running install is what reconciles a now-present skill with the
+  # state file after a verifier or an earlier command failed.
+  while IFS= read -r id; do
+    [[ -n "$id" ]] && broken+=("$id")
+  done < <(state_failed_components)
+
+  if [[ ${#broken[@]} -eq 0 ]]; then
+    log_ok "everything verifies; nothing to repair"
+    return 0
+  fi
+
+  # De-duplicate.
+  local -a unique=()
+  for id in "${broken[@]}"; do
+    in_list "$id" "${unique[@]+"${unique[@]}"}" || unique+=("$id")
+  done
+
+  log_warn "failing verification: $(join_by ', ' "${unique[@]}")"
+  confirm "Reinstall them?" || return 0
+  ARGS=("${unique[@]}")
+  CONTINUE_ON_ERROR=1
+  cmd_install
+}
+
+cmd_status() {
+  state_init
+  version_banner
+  printf '\n%sstate:%s %s\n' "$C_DIM" "$C_RESET" "$AI_STATE_FILE"
+  printf '%slock: %s %s\n\n' "$C_DIM" "$C_RESET" "$AI_LOCKFILE"
+
+  local rows
+  rows="$(state_rows)"
+  if [[ -z "$rows" ]]; then
+    log_warn "nothing recorded; run '${AI_CLI_NAME} install'"
+    return 0
+  fi
+
+  printf '%s  %-18s %-14s %-12s %-14s %s%s\n' \
+    "$C_BOLD" "COMPONENT" "AGENT" "VERSION" "BACKEND" "STATUS" "$C_RESET"
+  local comp harness ver backend status colour
+  while IFS=$'\t' read -r comp harness ver backend status; do
+    case "$status" in
+      installed) colour="$C_GREEN" ;;
+      manual) colour="$C_YELLOW" ;;
+      *) colour="$C_RED" ;;
+    esac
+    printf '  %-18s %-14s %-12s %-14s %s%s%s\n' \
+      "$comp" "$harness" "$ver" "$backend" "$colour" "$status" "$C_RESET"
+  done <<<"$rows"
+}
+
+cmd_list() {
+  local filter_type="" filter_tag=""
+  local i
+  for ((i = 0; i < ${#ARGS[@]}; i++)); do
+    case "${ARGS[$i]}" in
+      --type)
+        filter_type="${ARGS[$((i + 1))]}"
+        ;;
+      --tag)
+        filter_tag="${ARGS[$((i + 1))]}"
+        ;;
+    esac
+  done
+
+  printf '%s  %-18s %-10s %-14s %s%s\n' \
+    "$C_BOLD" "ID" "TYPE" "BACKEND" "DESCRIPTION" "$C_RESET"
+  local id
+  while IFS= read -r id; do
+    local t
+    t="$(manifest_type "$id")"
+    [[ -n "$filter_type" && "$t" != "$filter_type" ]] && continue
+    if [[ -n "$filter_tag" ]]; then
+      manifest_tags "$id" | grep -qx "$filter_tag" || continue
+    fi
+    local mark=" "
+    state_is_installed "$id" 2>/dev/null && mark="${C_GREEN}${G_OK}${C_RESET}"
+    printf '%b %-18s %-10s %-14s %s\n' \
+      "$mark" "$id" "$t" "$(manifest_backend "$id")" "$(manifest_desc "$id")"
+  done < <(manifest_ids)
+
+  printf '\n%sProfiles:%s\n' "$C_BOLD" "$C_RESET"
+  local p
+  while IFS= read -r p; do
+    printf '  %-12s %s\n' "$p" "$(jq -r --arg p "$p" '.profiles[$p].description // ""' "$AI_MANIFEST")"
+  done < <(manifest_profiles)
+}
+
+cmd_search() {
+  [[ ${#ARGS[@]} -eq 0 ]] && die "usage: ${AI_CLI_NAME} search <term>"
+  local found=0 id type backend desc
+  while IFS=$'\t' read -r id type backend desc; do
+    found=1
+    printf '  %s%-18s%s %-10s %-14s %s\n' \
+      "$C_BOLD" "$id" "$C_RESET" "$type" "$backend" "$desc"
+  done < <(manifest_search "${ARGS[0]}")
+  ((found)) || log_warn "no component matches '${ARGS[0]}'"
+}
+
+cmd_versions() {
+  state_init
+  printf '%s  %-18s %-14s %s%s\n' "$C_BOLD" "COMPONENT" "INSTALLED" "MANIFEST" "$C_RESET"
+  local id
+  while IFS= read -r id; do
+    manifest_exists "$id" || continue
+    printf '  %-18s %-14s %s\n' \
+      "$id" "$(component_version "$id")" "$(manifest_version_spec "$id")"
+  done < <(state_components)
+}
+
+cmd_why() {
+  [[ ${#ARGS[@]} -eq 0 ]] && die "usage: ${AI_CLI_NAME} why <component>"
+  deps_why "${ARGS[0]}"
+}
+
+# ---------------------------------------------------------------------------
+# Harness, index, config, clean
+# ---------------------------------------------------------------------------
+
+cmd_harness() {
+  local sub="${ARGS[0]:-list}"
+  case "$sub" in
+    list | detect)
+      printf '%s  %-14s %-12s %-10s %s%s\n' \
+        "$C_BOLD" "ID" "STATUS" "VERSION" "CONFIG" "$C_RESET"
+      local h
+      while IFS= read -r h; do
+        if harness_detect "$h" >/dev/null 2>&1; then
+          printf '  %-14s %s%-12s%s %-10s %s\n' \
+            "$h" "$C_GREEN" "installed" "$C_RESET" \
+            "$(harness_version "$h")" "$(harness_config_path "$h")"
+        else
+          printf '  %-14s %s%-12s%s\n' "$h" "$C_GREY" "absent" "$C_RESET"
+        fi
+      done < <(harness_all)
+      ;;
+    *) die "usage: ${AI_CLI_NAME} harness [list|detect]" ;;
+  esac
+}
+
+cmd_index() {
+  have codegraph || die "codegraph is not installed; run '${AI_CLI_NAME} install codegraph'"
+  local path="${ARGS[0]:-$PWD}"
+  [[ -d "$path" ]] || die "not a directory: ${path}"
+  log_step "Indexing ${path}"
+  if [[ -d "${path}/.codegraph" ]]; then
+    run_user codegraph sync "$path"
+  else
+    run_user codegraph init "$path"
+  fi
+  run_user codegraph status "$path"
+}
+
+cmd_config() {
+  local sub="${ARGS[0]:-path}"
+  local file="$AI_CONFIG_DIR/config.env"
+  mkdir -p "$AI_CONFIG_DIR"
+  touch "$file"
+  case "$sub" in
+    path) printf '%s\n' "$file" ;;
+    get)
+      local key="${ARGS[1]:-}"
+      [[ -z "$key" ]] && {
+        cat "$file"
+        return 0
+      }
+      grep -E "^${key}=" "$file" | tail -n1 | cut -d= -f2- || true
+      ;;
+    set)
+      local key="${ARGS[1]:-}" val="${ARGS[2]:-}"
+      [[ -z "$key" ]] && die "usage: ${AI_CLI_NAME} config set <key> <value>"
+      rollback_backup "$file"
+      local tmp
+      tmp="$(mktemp)"
+      grep -vE "^${key}=" "$file" >"$tmp" || true
+      printf '%s=%s\n' "$key" "$val" >>"$tmp"
+      mv "$tmp" "$file"
+      log_ok "${key}=${val}"
+      ;;
+    *) die "usage: ${AI_CLI_NAME} config [path|get|set] [key] [value]" ;;
+  esac
+}
+
+cmd_clean() {
+  local all=0
+  in_list "--all" "${ARGS[@]+"${ARGS[@]}"}" && all=1
+
+  log_step "Cleaning caches"
+  if [[ -d "$AI_CACHE_DIR" ]]; then
+    local size
+    size="$(du -sh "$AI_CACHE_DIR" 2>/dev/null | cut -f1)"
+    run_user rm -rf "${AI_CACHE_DIR:?}/"*
+    log_ok "cleared ${size:-0} from ${AI_CACHE_DIR}"
+  fi
+
+  if [[ -d "$AI_LOG_DIR" ]]; then
+    find "$AI_LOG_DIR" -name '*.jsonl' -mtime +7 -delete 2>/dev/null || true
+    log_ok "pruned logs older than 7 days"
+  fi
+
+  find "$AI_STATE_DIR/journal" -name '*.journal' -mtime +7 -delete 2>/dev/null || true
+
+  if ((all)); then
+    have npm && run_user npm cache clean --force
+    have cargo && run_user rm -rf "$HOME/.cargo/registry/cache"
+    have uv && run_user uv cache clean
+    log_ok "package manager caches cleared"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Export / import / completion / self-update
+# ---------------------------------------------------------------------------
+
+cmd_export() {
+  local out="${ARGS[0]:-ai-stack-export.json}"
+  state_init
+  lockfile_write
+  cp "$AI_LOCKFILE" "$out"
+  log_ok "exported to ${out}"
+  printf '  reproduce on another machine:\n'
+  printf '    cp %s ~/.config/vibe-coding-tools/ai.lock && %s install --from-lock\n' \
+    "$(basename "$out")" "$AI_CLI_NAME"
+}
+
+cmd_import() {
+  local in="${ARGS[0]:-}"
+  [[ -f "$in" ]] || die "usage: ${AI_CLI_NAME} import <file>"
+  jq -e '.components' "$in" >/dev/null || die "${in} is not a valid vibe-coding-tools export"
+  mkdir -p "$(dirname "$AI_LOCKFILE")"
+  cp "$in" "$AI_LOCKFILE"
+  log_ok "lockfile imported"
+  FROM_LOCK=1
+  ARGS=()
+  cmd_install
+}
+
+cmd_completion() {
+  local shell="${ARGS[0]:-bash}"
+  local f="$AI_ROOT/completions/${AI_CLI_NAME}.${shell}"
+  [[ -f "$f" ]] || f="$AI_ROOT/completions/ai.${shell}"
+  [[ -f "$f" ]] || die "no completion script for '${shell}'"
+  cat "$f"
+}
+
+cmd_self_update() {
+  [[ -d "$AI_ROOT/.git" ]] || die "not a git checkout; reinstall with bootstrap.sh"
+  log_step "Updating vibe-coding-tools"
+  run_user git -C "$AI_ROOT" pull --ff-only
+  run_user make -C "$AI_ROOT" manifest
+  log_ok "$(version_string)"
+}
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+main() {
+  [[ $# -eq 0 ]] && {
+    usage
+    exit 0
+  }
+
+  local cmd="$1"
+  shift
+  parse_global_opts "$@"
+
+  ensure_dirs
+  log_init "$AI_LOG_DIR"
+
+  # Load user configuration, if any, without letting it override an explicit
+  # command-line flag (the flags were parsed above and re-exported after).
+  local cfg="$AI_CONFIG_DIR/config.env"
+  if [[ -f "$cfg" ]]; then
+    # shellcheck source=/dev/null
+    set -a && . "$cfg" && set +a
+  fi
+
+  case "$cmd" in
+    install | i) cmd_install ;;
+    remove | rm | uninstall) cmd_remove ;;
+    update | upgrade) cmd_update ;;
+    doctor | check) cmd_doctor ;;
+    repair | fix) cmd_repair ;;
+    status | st) cmd_status ;;
+    list | ls) cmd_list ;;
+    search | find) cmd_search ;;
+    versions) cmd_versions ;;
+    why | explain) cmd_why ;;
+    harness | agents) cmd_harness ;;
+    index) cmd_index ;;
+    config | cfg) cmd_config ;;
+    clean) cmd_clean ;;
+    reset) agent_reset ;;
+    export) cmd_export ;;
+    import) cmd_import ;;
+    completion) cmd_completion ;;
+    self-update) cmd_self_update ;;
+    dry-run)
+      AI_DRY_RUN=1
+      export AI_DRY_RUN
+      cmd_install
+      ;;
+    version | --version | -V) version_string && printf '\n' ;;
+    help | --help | -h) usage ;;
+    *)
+      log_error "unknown command '${cmd}'"
+      printf '\n'
+      usage
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

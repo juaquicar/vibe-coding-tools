@@ -1,0 +1,8 @@
+# vibe-coding-tools shellcheck configuration
+shell=bash
+external-sources=true
+
+# SC1091: sourced files are resolved at runtime from AI_LIB_DIR; the
+# source-path flag in the Makefile handles the ones that can be resolved
+# statically, and per-file directives cover the dynamic ones.
+disable=SC1091

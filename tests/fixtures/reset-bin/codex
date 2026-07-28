@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+case "$*" in
+  "plugin remove --help")
+    exit 0
+    ;;
+  "plugin list --json")
+    printf '{"installed":[{"id":"demo@fixture"}],"available":[]}\n'
+    ;;
+  "plugin remove demo@fixture --json")
+    printf '%s\n' "$*" >>"${FAKE_AGENT_LOG:?}"
+    ;;
+  "mcp list --json")
+    printf '[{"name":"legacy_codex"}]\n'
+    ;;
+  "mcp remove legacy_codex")
+    printf '%s\n' "$*" >>"${FAKE_AGENT_LOG:?}"
+    ;;
+  "--version")
+    printf 'codex-cli 0.145.0\n'
+    ;;
+  *)
+    printf 'unexpected codex invocation: %s\n' "$*" >&2
+    exit 1
+    ;;
+esac

@@ -1,0 +1,12 @@
+{
+  // This preference must survive the reset.
+  "$schema": "https://opencode.ai/config.json",
+  "theme": "fixture",
+  "plugin": ["demo-plugin"],
+  "mcp": {
+    "legacy-opencode": {
+      "type": "local",
+      "command": ["legacy"]
+    }
+  }
+}

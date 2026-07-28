@@ -1,0 +1,4 @@
+model = "fixture-model"
+
+[mcp_servers.legacy_codex]
+command = "legacy"

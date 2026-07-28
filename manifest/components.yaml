@@ -1,0 +1,602 @@
+%YAML 1.2
+---
+# vibe-coding-tools — component manifest
+#
+# THIS FILE IS THE ONLY PLACE COMPONENT KNOWLEDGE LIVES.
+# The rest of the project contains no per-component logic.
+#
+# It is DECLARATIVE. There is no `install_cmd:` field, because a manifest that
+# carries shell strings is an `eval` with YAML decoration: it defeats
+# --dry-run, defeats rollback, defeats ShellCheck, and turns every pull request
+# into arbitrary root code execution. Instead each component names a `backend`,
+# and lib/backends/<backend>.sh knows how to handle that class of thing.
+#
+# Edit this file; then run `make manifest` to regenerate the committed
+# components.json that the runtime actually reads (jq only, no yq at runtime).
+#
+# ---------------------------------------------------------------------------
+# FIELD REFERENCE
+# ---------------------------------------------------------------------------
+#   id            unique slug, used on the CLI
+#   type          tool | harness | extension | mcp | meta
+#   backend       apt | apt-repo | npm-global | cargo | uv-tool | pipx
+#                 | github-release | script | claude-plugin | agent-skill
+#                 | mcp-server | none
+#   description   one line, shown by `ai list` and `ai search`
+#   version       "latest" or an exact pin (lockfile overrides both)
+#   requires      dependency ids; resolved topologically before install
+#   bin           primary executable name, for `ai doctor` path column
+#   sudo          true when the backend needs root
+#   relogin       true when a shell restart / re-login is needed afterwards
+#   tags          free-form grouping
+#   verify        how to check presence — see kinds below
+#   harnesses     per-agent support matrix (extensions and MCP servers only)
+#
+# VERIFY KINDS
+#   command : run verify.cmd, regex-match its output against verify.match
+#   path    : test -e verify.path
+#   plugin  : ask the harness adapter whether the plugin is registered
+#   mcp     : ask the harness adapter whether the server is registered
+#   none    : unverifiable; trust the state file
+#
+# `command` is wrong for agent extensions: Superpowers and Caveman are never on
+# PATH, so `command -v superpowers` would report a false negative forever.
+# ---------------------------------------------------------------------------
+
+profiles:
+  minimal:
+    description: Bare essentials — build tools, git, Node and Claude Code.
+    harnesses: [claude-code]
+    components:
+      - base
+      - git
+      - node
+      - claude-code
+
+  developer:
+    description: Full multi-agent workstation. The default.
+    harnesses: [claude-code, codex, opencode]
+    components:
+      - base
+      - git
+      - cli-utils
+      - python
+      - ruff
+      - node
+      - rust
+      - ast-grep
+      - tree-sitter
+      - pyright
+      - docker
+      - github-cli
+      - claude-code
+      - codex
+      - opencode
+      - codegraph
+      - superpowers
+      - caveman
+      - context7
+
+  django:
+    description: Developer profile plus a Python/Django service toolchain.
+    harnesses: [claude-code, codex, opencode]
+    components:
+      - base
+      - git
+      - cli-utils
+      - python
+      - ruff
+      - node
+      - rust
+      - ast-grep
+      - tree-sitter
+      - pyright
+      - docker
+      - github-cli
+      - django-toolchain
+      - claude-code
+      - codex
+      - opencode
+      - codegraph
+      - superpowers
+      - caveman
+      - context7
+
+  gis:
+    description: Developer profile plus a geospatial stack (GDAL, PostGIS client, tiling).
+    harnesses: [claude-code, codex, opencode]
+    components:
+      - base
+      - git
+      - cli-utils
+      - python
+      - ruff
+      - node
+      - rust
+      - ast-grep
+      - tree-sitter
+      - pyright
+      - docker
+      - github-cli
+      - gis-toolchain
+      - claude-code
+      - codex
+      - opencode
+      - codegraph
+      - superpowers
+      - caveman
+      - context7
+
+  full:
+    description: Everything, every harness. Slowest install.
+    harnesses: [claude-code, codex, opencode]
+    components:
+      - base
+      - git
+      - cli-utils
+      - python
+      - uv
+      - ruff
+      - node
+      - rust
+      - ast-grep
+      - tree-sitter
+      - pyright
+      - docker
+      - github-cli
+      - django-toolchain
+      - gis-toolchain
+      - claude-code
+      - codex
+      - opencode
+      - codegraph
+      - superpowers
+      - caveman
+      - context7
+
+components:
+  # =========================================================================
+  # Layer 0 — system foundations
+  # =========================================================================
+
+  - id: base
+    type: tool
+    backend: apt
+    description: Compilers, headers and the certificate/HTTP basics everything else needs.
+    sudo: true
+    tags: [system, core]
+    packages:
+      - build-essential
+      - cmake
+      - make
+      - gcc
+      - g++
+      - pkg-config
+      - software-properties-common
+      - ca-certificates
+      - curl
+      - wget
+      - jq
+      - zip
+      - unzip
+      - gnupg
+      - xz-utils
+      - file
+    bin: gcc
+    verify:
+      kind: command
+      cmd: gcc --version
+      match: '[0-9]+\.[0-9]+'
+
+  - id: git
+    type: tool
+    backend: apt
+    description: Distributed version control.
+    sudo: true
+    requires: [base]
+    tags: [system, core]
+    packages: [git, git-lfs]
+    bin: git
+    verify:
+      kind: command
+      cmd: git --version
+      match: 'git version'
+
+  - id: cli-utils
+    type: tool
+    backend: apt
+    description: Modern terminal toolkit — ripgrep, fd, bat, eza, fzf, zoxide, tmux.
+    sudo: true
+    requires: [base]
+    tags: [system, cli]
+    packages:
+      - ripgrep
+      - fd-find
+      - bat
+      - eza
+      - fzf
+      - zoxide
+      - tree
+      - tmux
+      - htop
+      - ncdu
+    bin: rg
+    verify:
+      kind: command
+      cmd: rg --version
+      match: 'ripgrep'
+    # Ubuntu ships fd as fdfind and bat as batcat to avoid name collisions.
+    # The post-install hook creates the conventional names in ~/.local/bin.
+
+  # =========================================================================
+  # Layer 1 — language runtimes
+  # =========================================================================
+
+  - id: python
+    type: tool
+    backend: apt
+    description: Python 3 with venv and pipx (PEP 668 safe — never pip --user).
+    sudo: true
+    requires: [base]
+    tags: [lang, python]
+    packages: [python3, python3-venv, python3-pip, pipx]
+    bin: python3
+    verify:
+      kind: command
+      cmd: python3 --version
+      match: 'Python 3'
+
+  - id: uv
+    type: tool
+    backend: script
+    description: Fast Python package and tool manager. Installs to ~/.local/bin.
+    requires: [base, python]
+    tags: [lang, python]
+    bin: uv
+    relogin: true
+    script:
+      url: https://astral.sh/uv/install.sh
+      update: uv self update
+      uninstall: uv self uninstall
+    verify:
+      kind: command
+      cmd: uv --version
+      match: 'uv '
+
+  - id: ruff
+    type: tool
+    backend: uv-tool
+    description: Python linter and formatter.
+    requires: [uv]
+    package: ruff
+    tags: [lang, python, lint]
+    bin: ruff
+    verify:
+      kind: command
+      cmd: ruff --version
+      match: 'ruff '
+
+  - id: fnm
+    type: tool
+    backend: script
+    description: Fast Node Manager. Keeps Node entirely in $HOME, so npm -g needs no sudo.
+    requires: [base]
+    tags: [lang, node]
+    bin: fnm
+    relogin: true
+    script:
+      url: https://fnm.vercel.app/install
+      args: --skip-shell
+    verify:
+      kind: command
+      cmd: fnm --version
+      match: 'fnm '
+
+  - id: node
+    type: tool
+    backend: none
+    description: Node.js LTS, installed through fnm into user space.
+    requires: [fnm]
+    tags: [lang, node]
+    bin: node
+    relogin: true
+    verify:
+      kind: command
+      cmd: node --version
+      match: 'v[0-9]+'
+    # The post-install hook runs `fnm install --lts` and sets the default.
+    # NodeSource is deliberately not used: it lands Node in /usr, which forces
+    # sudo on every `npm -g` and makes clean uninstall impossible.
+
+  - id: rust
+    type: tool
+    backend: script
+    description: Rust toolchain via rustup (stable channel).
+    requires: [base]
+    tags: [lang, rust]
+    bin: cargo
+    relogin: true
+    script:
+      url: https://sh.rustup.rs
+      args: -y --no-modify-path --profile minimal
+      update: rustup update stable
+      uninstall: rustup self uninstall -y
+    verify:
+      kind: command
+      cmd: cargo --version
+      match: 'cargo '
+
+  - id: ast-grep
+    type: tool
+    backend: npm-global
+    description: Structural search and rewrite based on tree-sitter.
+    requires: [node]
+    package: '@ast-grep/cli'
+    tags: [cli, codemod]
+    bin: ast-grep
+    verify:
+      kind: command
+      cmd: ast-grep --version
+      match: 'ast-grep'
+
+  - id: tree-sitter
+    type: tool
+    backend: npm-global
+    description: Tree-sitter CLI, for grammar work and parser debugging.
+    requires: [node]
+    package: tree-sitter-cli
+    tags: [cli, parsing]
+    bin: tree-sitter
+    verify:
+      kind: command
+      cmd: tree-sitter --version
+      match: 'tree-sitter'
+
+  - id: pyright
+    type: tool
+    backend: npm-global
+    description: Static type checker for Python.
+    requires: [node]
+    package: pyright
+    tags: [lang, python, lint]
+    bin: pyright
+    verify:
+      kind: command
+      cmd: pyright --version
+      match: 'pyright'
+
+  # =========================================================================
+  # Layer 2 — platform services
+  # =========================================================================
+
+  - id: docker
+    type: tool
+    backend: apt-repo
+    description: Docker Engine and Compose from Docker's official apt repository.
+    sudo: true
+    relogin: true
+    requires: [base]
+    tags: [system, containers]
+    bin: docker
+    repo:
+      id: docker
+      key_url: https://download.docker.com/linux/ubuntu/gpg
+      uri: https://download.docker.com/linux/ubuntu
+      suite: ${VERSION_CODENAME}
+      components: stable
+    packages:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-buildx-plugin
+      - docker-compose-plugin
+    verify:
+      kind: command
+      cmd: docker --version
+      match: 'Docker version'
+    # SECURITY: the post-install hook adds you to the `docker` group, which is
+    # equivalent to passwordless root on this machine. The hook says so out
+    # loud and asks first. get.docker.com is deliberately not used.
+
+  - id: github-cli
+    type: tool
+    backend: apt-repo
+    description: GitHub CLI (gh).
+    sudo: true
+    requires: [base]
+    tags: [system, git]
+    bin: gh
+    repo:
+      id: github-cli
+      key_url: https://cli.github.com/packages/githubcli-archive-keyring.gpg
+      uri: https://cli.github.com/packages
+      suite: stable
+      components: main
+    packages: [gh]
+    verify:
+      kind: command
+      cmd: gh --version
+      match: 'gh version'
+
+  # =========================================================================
+  # Layer 3 — coding agents (harnesses)
+  # =========================================================================
+
+  - id: claude-code
+    type: harness
+    backend: npm-global
+    description: Anthropic's Claude Code agent.
+    requires: [node]
+    package: '@anthropic-ai/claude-code'
+    version: latest
+    tags: [agent]
+    bin: claude
+    verify:
+      kind: command
+      cmd: claude --version
+      match: '[0-9]+\.[0-9]+'
+
+  - id: codex
+    type: harness
+    backend: npm-global
+    description: OpenAI Codex CLI.
+    requires: [node]
+    package: '@openai/codex'
+    version: latest
+    tags: [agent]
+    bin: codex
+    verify:
+      kind: command
+      cmd: codex --version
+      match: '[0-9]+\.[0-9]+'
+
+  - id: opencode
+    type: harness
+    backend: npm-global
+    description: OpenCode terminal coding agent.
+    requires: [node]
+    package: opencode-ai
+    version: latest
+    tags: [agent]
+    bin: opencode
+    verify:
+      kind: command
+      cmd: opencode --version
+      match: '[0-9]+\.[0-9]+'
+
+  # =========================================================================
+  # Layer 4 — agent extensions
+  #
+  # These are NOT installable software. They are agent configuration, and they
+  # are the reason `harness` is a first-class dimension of this project.
+  # =========================================================================
+
+  - id: codegraph
+    type: tool
+    backend: npm-global
+    description: Local code knowledge graph exposed to agents over MCP.
+    requires: [node]
+    package: '@colbymchenry/codegraph'
+    version: latest
+    repository: colbymchenry/codegraph
+    tags: [agent-tool, index]
+    bin: codegraph
+    verify:
+      kind: command
+      cmd: codegraph version
+      match: '[0-9]+\.[0-9]+'
+    # The post-install hook runs `codegraph install --yes --target=<detected>`,
+    # which is the step that actually wires it into each agent. Installing the
+    # CLI alone does nothing. Telemetry is opted out when
+    # AI_OPT_OUT_TELEMETRY=1 (the default).
+
+  - id: superpowers
+    type: extension
+    backend: claude-plugin
+    description: Agentic skills framework and TDD-first development methodology.
+    requires: [claude-code]
+    repository: obra/superpowers
+    marketplace: obra/superpowers-marketplace
+    plugin: superpowers
+    tags: [agent-ext, skills]
+    verify:
+      kind: plugin
+    harnesses:
+      claude-code:
+        scriptable: true
+        method: marketplace
+      codex:
+        scriptable: true
+        method: marketplace
+      opencode:
+        scriptable: true
+        method: plugin
+        arg: 'superpowers@git+https://github.com/obra/superpowers.git'
+
+  - id: caveman
+    type: extension
+    backend: claude-plugin
+    description: Response-compression skill; cuts agent output tokens substantially.
+    requires: [claude-code]
+    repository: JuliusBrussee/caveman
+    marketplace: JuliusBrussee/caveman
+    plugin: caveman
+    tags: [agent-ext, skills, tokens]
+    verify:
+      kind: plugin
+    harnesses:
+      claude-code:
+        scriptable: true
+        method: marketplace
+      codex:
+        scriptable: true
+        method: skills-registry
+      opencode:
+        scriptable: true
+        method: skills-registry
+    # On Codex and OpenCode the claude-plugin backend delegates to the
+    # cross-agent skills registry, which is the only mechanism that spans all
+    # three. Caveman's own curl|bash installer is deliberately not used.
+
+  - id: context7
+    type: mcp
+    backend: mcp-server
+    description: Up-to-date, version-specific library documentation over MCP.
+    requires: [node]
+    repository: upstash/context7
+    server: context7
+    tags: [mcp, docs]
+    verify:
+      kind: mcp
+    mcp:
+      type: http
+      url: https://mcp.context7.com/mcp
+      headers:
+        CONTEXT7_API_KEY: ${CONTEXT7_API_KEY}
+    harnesses:
+      claude-code: { scriptable: true, method: mcp }
+      codex: { scriptable: true, method: mcp }
+      opencode: { scriptable: true, method: mcp }
+    # Registered as a remote MCP server rather than through `npx ctx7 setup`,
+    # because that flow needs interactive OAuth. Set CONTEXT7_API_KEY in your
+    # environment first (free key at context7.com/dashboard); without one you
+    # get the anonymous rate limit.
+
+  # =========================================================================
+  # Layer 5 — domain toolchains
+  # =========================================================================
+
+  - id: django-toolchain
+    type: tool
+    backend: apt
+    description: PostgreSQL and Redis clients for Django service work.
+    sudo: true
+    requires: [base, python]
+    tags: [domain, web]
+    packages: [postgresql-client, redis-tools, libpq-dev]
+    bin: psql
+    verify:
+      kind: command
+      cmd: psql --version
+      match: 'psql'
+
+  - id: gis-toolchain
+    type: tool
+    backend: apt
+    description: GDAL, PROJ, PostGIS client and spatial build headers.
+    sudo: true
+    requires: [base, python]
+    tags: [domain, gis]
+    packages:
+      - gdal-bin
+      - libgdal-dev
+      - proj-bin
+      - libproj-dev
+      - libgeos-dev
+      - postgresql-client
+      - spatialite-bin
+    bin: ogr2ogr
+    verify:
+      kind: command
+      cmd: ogrinfo --version
+      match: 'GDAL'

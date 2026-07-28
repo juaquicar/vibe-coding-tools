@@ -1,0 +1,6 @@
+{
+  "preferredNotifChannel": "terminal_bell",
+  "enabledPlugins": {
+    "demo@fixture": true
+  }
+}
