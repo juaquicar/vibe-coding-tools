@@ -23,7 +23,7 @@
 #   <id>_plugin_add <marketplace> <plugin>
 #   <id>_plugin_remove <plugin>
 #   <id>_plugin_has <plugin>
-#   <id>_skill_add <repo>
+#   <id>_skill_add <repo> [skill]   # empty skill = every skill in the repo
 #   <id>_skill_remove <skill>
 #   <id>_skill_has <skill>
 #
@@ -94,7 +94,7 @@ harness_mcp_has() { harness_call "$1" mcp_has "$2"; }
 harness_plugin_add() { harness_call "$1" plugin_add "$2" "$3"; }
 harness_plugin_remove() { harness_call "$1" plugin_remove "$2"; }
 harness_plugin_has() { harness_call "$1" plugin_has "$2"; }
-harness_skill_add() { harness_call "$1" skill_add "$2"; }
+harness_skill_add() { harness_call "$1" skill_add "$2" "${3:-}"; }
 harness_skill_remove() { harness_call "$1" skill_remove "$2"; }
 harness_skill_has() { harness_call "$1" skill_has "$2"; }
 
@@ -203,68 +203,31 @@ harness_json_merge() {
   mv "$tmp" "$path"
 }
 
-# harness_toml_merge <path> <server-name> <spec-json>
-# Codex keeps its config in TOML and jq cannot write TOML. Rather than pull in
-# taplo or tomli-w, we use Python: tomllib is stdlib from 3.11 for reading, and
-# the writer below only has to emit the narrow subset an MCP entry needs.
+# harness_toml_patch <path> <json-patch>
+# Deep-merge a JSON object into a TOML file. Codex keeps its config in TOML and
+# jq cannot write TOML, so the writing lives in lib/toml_edit.py — one
+# implementation, which is what keeps key quoting correct everywhere.
+harness_toml_patch() {
+  local path="$1" patch="$2"
+  if [[ "$AI_DRY_RUN" == "1" ]]; then
+    printf '%s  [dry-run] edit %s%s\n' "$C_GREY" "$path" "$C_RESET" >&2
+    return 0
+  fi
+  mkdir -p "$(dirname "$path")"
+  rollback_backup "$path"
+  printf '%s' "$patch" | python3 "$AI_LIB_DIR/toml_edit.py" set "$path"
+}
+
+# harness_toml_mcp_write <path> <server-name> <spec-json>
 harness_toml_mcp_write() {
   local path="$1" name="$2" spec="$3"
   if [[ "$AI_DRY_RUN" == "1" ]]; then
     printf '%s  [dry-run] edit %s (mcp_servers.%s)%s\n' "$C_GREY" "$path" "$name" "$C_RESET" >&2
     return 0
   fi
-  mkdir -p "$(dirname "$path")"
-  rollback_backup "$path"
-  AI_TOML_PATH="$path" AI_TOML_NAME="$name" AI_TOML_SPEC="$spec" python3 - <<'PY'
-import json, os, sys
-
-try:
-    import tomllib
-except ModuleNotFoundError:
-    sys.exit("python3.11+ with tomllib is required to edit the Codex config")
-
-path = os.environ["AI_TOML_PATH"]
-name = os.environ["AI_TOML_NAME"]
-spec = json.loads(os.environ["AI_TOML_SPEC"])
-
-data = {}
-if os.path.exists(path):
-    with open(path, "rb") as fh:
-        data = tomllib.load(fh)
-
-data.setdefault("mcp_servers", {})[name] = spec
-
-
-def emit(value):
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (int, float)):
-        return json.dumps(value)
-    if isinstance(value, str):
-        return json.dumps(value)
-    if isinstance(value, list):
-        return "[" + ", ".join(emit(v) for v in value) + "]"
-    raise TypeError(f"unsupported TOML value: {value!r}")
-
-
-def render(prefix, table, lines):
-    scalars = {k: v for k, v in table.items() if not isinstance(v, dict)}
-    tables = {k: v for k, v in table.items() if isinstance(v, dict)}
-    if prefix:
-        lines.append(f"[{prefix}]")
-    for key, val in scalars.items():
-        lines.append(f"{key} = {emit(val)}")
-    if scalars:
-        lines.append("")
-    for key, val in tables.items():
-        render(f"{prefix}.{key}" if prefix else key, val, lines)
-
-
-lines = []
-render("", data, lines)
-with open(path, "w", encoding="utf-8") as fh:
-    fh.write("\n".join(lines).rstrip() + "\n")
-PY
+  local patch
+  patch="$(jq -nc --arg n "$name" --argjson s "$spec" '{mcp_servers: {($n): $s}}')" || return 1
+  harness_toml_patch "$path" "$patch"
 }
 
 # harness_toml_mcp_delete <path> <server-name>
@@ -276,53 +239,5 @@ harness_toml_mcp_delete() {
     return 0
   fi
   rollback_backup "$path"
-  AI_TOML_PATH="$path" AI_TOML_NAME="$name" python3 - <<'PY'
-import json, os, sys
-
-try:
-    import tomllib
-except ModuleNotFoundError:
-    sys.exit("python3.11+ with tomllib is required to edit the Codex config")
-
-path = os.environ["AI_TOML_PATH"]
-name = os.environ["AI_TOML_NAME"]
-
-with open(path, "rb") as fh:
-    data = tomllib.load(fh)
-
-data.get("mcp_servers", {}).pop(name, None)
-if not data.get("mcp_servers"):
-    data.pop("mcp_servers", None)
-
-
-def emit(value):
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (int, float)):
-        return json.dumps(value)
-    if isinstance(value, str):
-        return json.dumps(value)
-    if isinstance(value, list):
-        return "[" + ", ".join(emit(v) for v in value) + "]"
-    raise TypeError(f"unsupported TOML value: {value!r}")
-
-
-def render(prefix, table, lines):
-    scalars = {k: v for k, v in table.items() if not isinstance(v, dict)}
-    tables = {k: v for k, v in table.items() if isinstance(v, dict)}
-    if prefix:
-        lines.append(f"[{prefix}]")
-    for key, val in scalars.items():
-        lines.append(f"{key} = {emit(val)}")
-    if scalars:
-        lines.append("")
-    for key, val in tables.items():
-        render(f"{prefix}.{key}" if prefix else key, val, lines)
-
-
-lines = []
-render("", data, lines)
-with open(path, "w", encoding="utf-8") as fh:
-    fh.write("\n".join(lines).rstrip() + "\n")
-PY
+  python3 "$AI_LIB_DIR/toml_edit.py" delete "$path" mcp_servers "$name"
 }

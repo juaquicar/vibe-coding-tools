@@ -8,6 +8,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `grill-me` (from `mattpocock/skills`) as a cross-agent skill on Claude Code,
+  Codex and OpenCode. The new `skill:` manifest field pins one skill out of a
+  multi-skill repository, and `verify.kind: skill` checks for it.
+- `claude-mem` (`thedotmack/claude-mem`) — persistent memory across sessions —
+  on all three agents, through the new `npx-installer` backend. `npm -g` is
+  deliberately not used: upstream ships only the library that way.
+- `npx-installer` backend, for tools whose real installer is their own npx CLI
+  and which must be pointed at one agent at a time.
+- `codex-config` component: model defaults plus the `fast`, `arch`, `power` and
+  `fix` profiles (`codex -p <name>`), merged into `~/.codex/config.toml` from
+  `harnesses/codex-defaults.toml`. Skip it with `AI_CODEX_DEFAULTS=0`.
 - Safe `ai reset` workflow for Claude Code, Codex and OpenCode. It previews by
   default, backs up affected global configuration, then removes user skills,
   plugins, MCP registrations and OpenCode custom tools only with `--apply`.
@@ -19,6 +30,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Cross-agent skills are installed globally and can be removed through the
   skills registry.
 - Codex plugins use the current non-interactive `codex plugin` commands.
+
+### Fixed
+
+- TOML writing lives in `lib/toml_edit.py` and now quotes keys that are not
+  bare-key safe. Editing a Codex config that contained a table such as
+  `[plugins."claude-mem@claude-mem-local"]` previously rewrote it unquoted and
+  left a `config.toml` Codex could no longer parse.
+- Plugin detection: Claude Code also reads `installed_plugins.json`, and
+  OpenCode recognises plugins registered as a local bundle path
+  (`./plugins/<name>.js`). Installers that write those files directly were
+  reported as missing forever.
 
 ## [0.1.0] — 2026-07-27
 

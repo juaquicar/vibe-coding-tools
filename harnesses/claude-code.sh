@@ -115,15 +115,29 @@ claude_code_plugin_remove() {
 claude_code_plugin_has() {
   local plugin="$1"
   claude plugin list 2>/dev/null | grep -qiE "(^|[[:space:]/@])${plugin}([[:space:]@]|$)" && return 0
-  # Fallback: the on-disk plugin directory.
+  # Registry fallback. Third-party installers (claude-mem, for one) write this
+  # file directly instead of shelling out to `claude plugin install`, so the
+  # CLI listing alone is not authoritative. Keys are "<plugin>@<marketplace>".
+  local registry="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/installed_plugins.json"
+  if [[ -f "$registry" ]] && jq -e --arg p "$plugin" '
+      (.plugins // {}) | keys[] | select(. == $p or startswith($p + "@"))
+    ' "$registry" >/dev/null 2>&1; then
+    return 0
+  fi
+  # Last fallback: the on-disk plugin directory.
   [[ -d "$HOME/.claude/plugins/${plugin}" ]]
 }
 
 # --- Skills ------------------------------------------------------------------
 
+# claude_code_skill_add <repo> [skill]
+# Without a skill name the registry installs every skill in the repository,
+# which is rarely what a manifest row means. `--skill` narrows it to one.
 claude_code_skill_add() {
-  local repo="$1"
-  run_user npx --yes skills@latest add "$repo" --global --agent claude-code --yes
+  local repo="$1" skill="${2:-}"
+  local -a args=(--yes skills@latest add "$repo" --global --agent claude-code --yes)
+  [[ -n "$skill" ]] && args+=(--skill "$skill")
+  run_user npx "${args[@]}"
 }
 
 claude_code_skill_remove() {

@@ -62,6 +62,9 @@ check       "Superpowers scripts OpenCode" "manifest_harness_scriptable superpow
 check       "verify kinds are typed"       "[[ \$(manifest_verify_kind superpowers) == plugin ]]"
 check       "harness matrix is present"    "[[ \$(manifest_harnesses caveman) == *opencode* ]]"
 check_fails "unknown component rejected"   "manifest_exists no-such-thing"
+check       "grill-me pins one skill"      "[[ \$(manifest_field grill-me '.skill') == grill-me && \$(manifest_verify_kind grill-me) == skill ]]"
+check       "claude-mem uses its installer" "[[ \$(manifest_backend claude-mem) == npx-installer && \$(manifest_harness_arg claude-mem codex) == codex-cli ]]"
+check       "hook dirs map to components"  "for d in $ROOT/hooks/*/; do id=\$(basename \$d); [[ \$id == shell ]] && continue; manifest_exists \$id || exit 1; done"
 
 echo "backends"
 for f in "$ROOT"/lib/backends/*.sh; do
@@ -73,6 +76,18 @@ done
 echo "harnesses"
 check "OpenCode sees universal global skills" \
   "tmp=\$(mktemp -d); mkdir -p \"\$tmp/.agents/skills/caveman\"; HOME=\"\$tmp\"; XDG_CONFIG_HOME=\"\$tmp/.config\"; export HOME XDG_CONFIG_HOME; harness_load opencode; opencode_skill_has caveman"
+check "OpenCode sees a local plugin bundle" \
+  "tmp=\$(mktemp -d); mkdir -p \"\$tmp/.config/opencode\"; printf '%s' '{\"plugin\":[\"./plugins/claude-mem.js\"]}' > \"\$tmp/.config/opencode/opencode.json\"; HOME=\"\$tmp\"; XDG_CONFIG_HOME=\"\$tmp/.config\"; export HOME XDG_CONFIG_HOME; harness_load opencode; opencode_plugin_has claude-mem"
+check "Claude Code reads its plugin registry" \
+  "tmp=\$(mktemp -d); mkdir -p \"\$tmp/.claude/plugins\"; printf '%s' '{\"plugins\":{\"claude-mem@thedotmack\":[]}}' > \"\$tmp/.claude/plugins/installed_plugins.json\"; HOME=\"\$tmp\"; CLAUDE_CONFIG_DIR=\"\$tmp/.claude\"; export HOME CLAUDE_CONFIG_DIR; harness_load claude-code; claude_code_plugin_has claude-mem"
+check "skill selector reaches the registry" \
+  "harness_load claude-code; [[ \$(claude_code_skill_add mattpocock/skills grill-me 2>&1) == *'--skill grill-me'* ]]"
+check "TOML writer quotes unsafe keys" \
+  "tmp=\$(mktemp -d); printf '%s\\n' '[plugins.\"claude-mem@claude-mem-local\"]' 'enabled = true' > \"\$tmp/c.toml\"; printf '%s' '{\"model\":\"gpt-5.6-terra\"}' | python3 $ROOT/lib/toml_edit.py set \"\$tmp/c.toml\"; python3 -c \"import tomllib,sys; d=tomllib.load(open(sys.argv[1],'rb')); sys.exit(0 if d['plugins']['claude-mem@claude-mem-local']['enabled'] and d['model']=='gpt-5.6-terra' else 1)\" \"\$tmp/c.toml\""
+check "TOML patch preserves MCP servers" \
+  "tmp=\$(mktemp -d); printf '%s\\n' 'model = \"old\"' '' '[mcp_servers.pycharm]' 'url = \"http://x/stream\"' > \"\$tmp/c.toml\"; printf '%s' '{\"model\":\"gpt-5.6-terra\"}' | python3 $ROOT/lib/toml_edit.py set \"\$tmp/c.toml\"; python3 -c \"import tomllib,sys; d=tomllib.load(open(sys.argv[1],'rb')); sys.exit(0 if d['mcp_servers']['pycharm']['url'] and d['model']=='gpt-5.6-terra' else 1)\" \"\$tmp/c.toml\""
+check "installer argv is per-agent" \
+  "backend_load npx-installer; out=\$(_npx_installer_argv claude-mem install codex); [[ \$out == *--ide* && \$out == *codex-cli* && \$out == *--provider* ]]"
 while IFS= read -r h; do
   check "harness ${h} implements the contract" \
     "harness_load '$h'; for v in name detect config_path supports mcp_add mcp_remove mcp_has plugin_has skill_add skill_remove skill_has; do declare -F \"\$(harness_fn '$h' \$v)\" >/dev/null || exit 1; done"

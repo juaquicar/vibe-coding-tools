@@ -114,3 +114,43 @@ setup() { setup_suite_env; }
   [ "$(manifest_harness_arg superpowers opencode)" = \
     "superpowers@git+https://github.com/obra/superpowers.git" ]
 }
+
+@test "grill-me pins one skill out of a multi-skill repository" {
+  [ "$(manifest_field grill-me '.skill')" = "grill-me" ]
+  [ "$(manifest_verify_kind grill-me)" = "skill" ]
+}
+
+@test "claude-mem installs through its own installer, not npm -g" {
+  # `npm install -g claude-mem` gets you the library and none of the agent
+  # integration; upstream says so in its README.
+  [ "$(manifest_backend claude-mem)" = "npx-installer" ]
+  [ "$(manifest_harness_arg claude-mem codex)" = "codex-cli" ]
+  [ "$(manifest_harness_arg claude-mem claude-code)" = "claude-code" ]
+  [ "$(manifest_harness_arg claude-mem opencode)" = "opencode" ]
+}
+
+@test "the claude-mem installer runs non-interactively, per agent" {
+  backend_load npx-installer
+  run _npx_installer_argv claude-mem install codex
+  [[ "$output" == *"--ide"* ]]
+  [[ "$output" == *"codex-cli"* ]]
+  [[ "$output" == *"--provider"* ]]
+  [[ "$output" == *"claude"* ]]
+}
+
+@test "installer argv honours an environment override" {
+  backend_load npx-installer
+  AI_CLAUDE_MEM_PROVIDER=host run _npx_installer_argv claude-mem install codex
+  [[ "$output" == *"host"* ]]
+}
+
+@test "every hook directory belongs to a real component" {
+  for dir in "$ROOT"/hooks/*/; do
+    id="$(basename "$dir")"
+    [ "$id" = "shell" ] && continue
+    manifest_exists "$id" || {
+      echo "hooks/${id}/ has no component in the manifest"
+      return 1
+    }
+  done
+}

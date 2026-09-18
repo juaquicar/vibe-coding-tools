@@ -1,0 +1,83 @@
+# harnesses/codex-defaults.toml — the Codex CLI configuration this stack ships.
+#
+# hooks/codex/post-install.sh merges this into ~/.codex/config.toml. Keys you
+# do not see here (mcp_servers, extra profiles, personal preferences) are left
+# exactly as they are; the keys below are overwritten so the stack stays
+# reproducible across machines.
+#
+# Skip the whole step with AI_CODEX_DEFAULTS=0.
+#
+# SECURITY NOTE: approval_policy = "never" with sandbox_mode =
+# "danger-full-access" means Codex runs commands without asking and without a
+# sandbox, as your user. That is the requested workstation default here; it is
+# not a safe default on a shared or production machine. Change both keys, or
+# set AI_CODEX_DEFAULTS=0, if that is not what you want.
+
+# ============================================================
+# DEFAULT — trabajo diario
+# ============================================================
+
+model = "gpt-5.6-terra"
+model_provider = "openai"
+personality = "pragmatic"
+
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+
+model_reasoning_effort = "high"
+
+# ============================================================
+# FEATURES
+# ============================================================
+
+[features]
+memories = true
+fast_mode = true
+
+# ============================================================
+# FAST — rápido / barato / tareas sencillas
+# Uso: codex -p fast
+# ============================================================
+
+[profiles.fast]
+model = "gpt-5.6-luna"
+model_provider = "openai"
+model_reasoning_effort = "medium"
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+
+# ============================================================
+# ARCH — arquitectura / análisis complejo / tareas potentes
+# Uso: codex -p arch
+# ============================================================
+
+[profiles.arch]
+model = "gpt-5.6-sol"
+model_provider = "openai"
+model_reasoning_effort = "xhigh"
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+
+# ============================================================
+# POWER — máxima potencia
+# Uso: codex -p power
+# ============================================================
+
+[profiles.power]
+model = "gpt-5.6-sol"
+model_provider = "openai"
+model_reasoning_effort = "max"
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+
+# ============================================================
+# FIX — bugs, refactors y cambios normales
+# Uso: codex -p fix
+# ============================================================
+
+[profiles.fix]
+model = "gpt-5.6-terra"
+model_provider = "openai"
+model_reasoning_effort = "high"
+approval_policy = "never"
+sandbox_mode = "danger-full-access"

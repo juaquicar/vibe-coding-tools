@@ -492,7 +492,7 @@ cmd_remove() {
         any=1
         log_info "removing ${id} from $(harness_name "$h")"
         local hook
-        hook="$(manifest_hook "$id" pre-remove)"
+        hook="$(manifest_hook "$id" pre-remove || true)"
         [[ -n "$hook" ]] && run_hook "$hook" "$id" "$h"
         backend_call "$backend" remove "$id" "$h" || log_warn "${id}@${h}: removal reported an error"
         state_forget "$id" "$h"
@@ -501,10 +501,10 @@ cmd_remove() {
     else
       log_info "removing ${id}"
       local hook
-      hook="$(manifest_hook "$id" pre-remove)"
+      hook="$(manifest_hook "$id" pre-remove || true)"
       [[ -n "$hook" ]] && run_hook "$hook" "$id" ""
       backend_call "$backend" remove "$id" || log_warn "${id}: removal reported an error"
-      hook="$(manifest_hook "$id" post-remove)"
+      hook="$(manifest_hook "$id" post-remove || true)"
       [[ -n "$hook" ]] && run_hook "$hook" "$id" ""
       state_forget "$id"
     fi

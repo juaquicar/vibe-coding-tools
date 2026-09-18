@@ -20,7 +20,7 @@ Implement in `harnesses/<id>.sh`:
 <id>_supports <cap>          # plugin | skill | mcp-stdio | mcp-http
 <id>_mcp_add <name> <json>   /  _mcp_remove  /  _mcp_has
 <id>_plugin_add <mp> <name>  /  _plugin_remove  /  _plugin_has
-<id>_skill_add <repo>        /  _skill_remove   /  _skill_has
+<id>_skill_add <repo> [skill]/  _skill_remove   /  _skill_has
 ```
 
 Adding Cursor or Gemini CLI is one new file here plus manifest rows. The core
@@ -34,6 +34,30 @@ never changes.
 | **Caveman** | `claude plugin install` | skills registry | skills registry |
 | **Context7** | MCP (JSON) | MCP (TOML) | MCP (JSONC) |
 | **Superpowers** | `claude plugin install` | `codex plugin add` | `opencode plugin` |
+| **grill-me** | skills registry | skills registry | skills registry |
+| **claude-mem** | `--ide claude-code` | `--ide codex-cli` | `--ide opencode` |
+
+### grill-me and the skills registry
+
+`mattpocock/skills` publishes 38 skills. The manifest's `skill:` field pins the
+one the component actually means, and the adapter passes it through as
+`--skill`, so installing `grill-me` does not drag in the other 37.
+
+### claude-mem
+
+Its own installer is the only supported path — upstream's README says `npm
+install -g claude-mem` gives you the library without the hooks, the agent
+config or the worker. The `npx-installer` backend therefore runs
+`npx claude-mem install --ide <agent>` once per agent.
+
+Two defaults worth knowing: `--provider claude` keeps the install
+non-interactive (memory summarisation then runs on your Anthropic plan —
+override with `AI_CLAUDE_MEM_PROVIDER=host|gemini|openrouter`), and
+`--no-auto-start` means no background worker is launched during the install.
+Start it yourself with `npx claude-mem start`.
+
+Detection is per agent: Claude Code and Codex list it as a plugin, OpenCode
+registers it as `./plugins/claude-mem.js` in its config.
 
 ### Superpowers on OpenCode
 
@@ -48,13 +72,44 @@ the resulting `plugin` entry in `opencode.json`/`opencode.jsonc`.
 schema. File editing is a fallback only.
 
 That matters most for Codex, because `jq` cannot write TOML. Rather than pull
-in `taplo` or `tomli-w`, the fallback uses Python: `tomllib` is stdlib from
-3.11 for reading, and the writer only has to emit the narrow subset an MCP
-entry needs. If your Python is older than 3.11, Codex config editing is
+in `taplo` or `tomli-w`, the writing lives in `lib/toml_edit.py`: `tomllib` is
+stdlib from 3.11 for reading, and the writer emits the narrow subset an agent
+config needs. If your Python is older than 3.11, Codex config editing is
 unavailable and `bootstrap.sh` warns you.
+
+One implementation, because every caller needs the same invariant: keys that
+are not bare-key safe must be quoted. Codex plugin tables are named after
+plugin specs such as `claude-mem@claude-mem-local`, and emitting that header
+unquoted leaves a config Codex can no longer parse.
 
 For OpenCode, `harness_jsonc_read` strips comments before handing the document
 to `jq`, and never touches anything inside a string literal.
+
+Comments are not preserved by a merge. `codex-config` writes
+`harnesses/codex-defaults.toml` verbatim when there is no config yet, and
+merges key by key when there is — MCP servers, extra profiles and personal
+preferences already in the file survive.
+
+## Codex model defaults
+
+`ai install codex-config` applies the stack's Codex configuration: a default
+model and reasoning effort, plus profiles selected with `codex -p <name>`:
+
+| Profile | Model | Reasoning effort | For |
+|---|---|---|---|
+| *(default)* | `gpt-5.6-terra` | high | daily work |
+| `fast` | `gpt-5.6-luna` | medium | cheap, simple tasks |
+| `arch` | `gpt-5.6-sol` | xhigh | architecture, deep analysis |
+| `power` | `gpt-5.6-sol` | max | maximum capability |
+| `fix` | `gpt-5.6-terra` | high | bugs and refactors |
+
+Edit `harnesses/codex-defaults.toml` to change any of it; set
+`AI_CODEX_DEFAULTS=0` to leave `~/.codex/config.toml` alone entirely.
+
+**Those defaults also set `approval_policy = "never"` and `sandbox_mode =
+"danger-full-access"`**, which means Codex runs commands as your user with no
+prompt and no sandbox. That is a workstation choice, not a safe default on a
+shared or production machine. The installer warns every time it applies them.
 
 ## Selecting harnesses
 

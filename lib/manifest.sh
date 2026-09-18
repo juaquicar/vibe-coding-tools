@@ -76,6 +76,7 @@ manifest_needs_relogin() { [[ "$(manifest_field "$1" '.relogin' 'false')" == "tr
 #   command : run `verify.cmd`, match stdout against `verify.match`
 #   path    : test -e on `verify.path` (tilde expanded)
 #   plugin  : ask the harness adapter whether the plugin is registered
+#   skill   : ask the harness adapter whether the skill is installed
 #   mcp     : ask the harness adapter whether the MCP server is registered
 #   none    : unverifiable, trust the state file
 manifest_verify_kind() { manifest_field "$1" '.verify.kind' 'command'; }

@@ -58,6 +58,8 @@ $ ai doctor
                   claude-code   codex         opencode
   superpowers     ✓ ok          ✓ ok          ✓ ok
   caveman         ✓ ok          ✓ ok          ✓ ok
+  grill-me        ✓ ok          ✓ ok          ✓ ok
+  claude-mem      ✓ ok          ✓ ok          ✓ ok
   context7        ✓ ok          ✓ ok          ✓ ok
 
 ```
@@ -65,7 +67,7 @@ $ ai doctor
 | Layer | Components |
 |---|---|
 | **Agents** | Claude Code, Codex CLI, OpenCode |
-| **Extensions** | Superpowers, Caveman, CodeGraph, Context7 (MCP) |
+| **Extensions** | Superpowers, Caveman, grill-me, claude-mem, CodeGraph, Context7 (MCP) |
 | **Languages** | Python + uv + ruff + pyright, Node via fnm, Rust via rustup |
 | **Tooling** | ripgrep, fd, bat, eza, fzf, zoxide, tmux, ast-grep, tree-sitter |
 | **Platform** | Docker Engine, GitHub CLI, build toolchain |
@@ -210,6 +212,9 @@ its purpose. The design decisions that follow from taking that seriously:
 - **Docker group membership is root-equivalent**, and the installer says so and
   asks first, rather than doing it silently.
 - **Telemetry opt-out is the default.**
+- **`codex-config` is the one deliberately permissive default**: it sets Codex
+  to `approval_policy = "never"` and `sandbox_mode = "danger-full-access"`. The
+  installer warns each time it applies them; `AI_CODEX_DEFAULTS=0` opts out.
 
 Full threat model, including what is *not* guaranteed: [SECURITY.md](SECURITY.md).
 
@@ -228,6 +233,14 @@ the packages, are the interesting part.
 NodeSource puts Node in `/usr`, which forces sudo on every `npm install -g` and
 makes clean uninstall impossible. fnm keeps everything in `$HOME`. That single
 choice removes roughly half the sudo calls in a typical AI-tooling installer.
+
+**What does `codex-config` change?**
+It sets Codex's default model and reasoning effort and adds the `fast`, `arch`,
+`power` and `fix` profiles you select with `codex -p <name>`. The values live in
+`harnesses/codex-defaults.toml`; MCP servers and anything else already in
+`~/.codex/config.toml` are preserved. It also sets `approval_policy = "never"`
+and `sandbox_mode = "danger-full-access"` — no prompt, no sandbox — which is a
+deliberate workstation choice. `AI_CODEX_DEFAULTS=0` skips the whole step.
 
 **Why can't it install Superpowers everywhere?**
 OpenCode's documented method is to ask the agent to fetch and follow an

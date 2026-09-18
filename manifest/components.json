@@ -34,10 +34,13 @@
         "github-cli",
         "claude-code",
         "codex",
+        "codex-config",
         "opencode",
         "codegraph",
         "superpowers",
         "caveman",
+        "grill-me",
+        "claude-mem",
         "context7"
       ]
     },
@@ -64,10 +67,13 @@
         "django-toolchain",
         "claude-code",
         "codex",
+        "codex-config",
         "opencode",
         "codegraph",
         "superpowers",
         "caveman",
+        "grill-me",
+        "claude-mem",
         "context7"
       ]
     },
@@ -94,10 +100,13 @@
         "gis-toolchain",
         "claude-code",
         "codex",
+        "codex-config",
         "opencode",
         "codegraph",
         "superpowers",
         "caveman",
+        "grill-me",
+        "claude-mem",
         "context7"
       ]
     },
@@ -126,10 +135,13 @@
         "gis-toolchain",
         "claude-code",
         "codex",
+        "codex-config",
         "opencode",
         "codegraph",
         "superpowers",
         "caveman",
+        "grill-me",
+        "claude-mem",
         "context7"
       ]
     }
@@ -642,6 +654,111 @@
         "opencode": {
           "scriptable": true,
           "method": "skills-registry"
+        }
+      }
+    },
+    {
+      "id": "codex-config",
+      "type": "extension",
+      "backend": "none",
+      "description": "Codex model defaults and the fast/arch/power/fix profiles (codex -p <name>).",
+      "requires": [
+        "codex"
+      ],
+      "tags": [
+        "agent-ext",
+        "config"
+      ],
+      "verify": {
+        "kind": "path",
+        "path": "$HOME/.codex/config.toml"
+      }
+    },
+    {
+      "id": "grill-me",
+      "type": "extension",
+      "backend": "agent-skill",
+      "description": "Relentless interview that stress-tests a plan or design before you build it.",
+      "requires": [
+        "node"
+      ],
+      "repository": "mattpocock/skills",
+      "skill": "grill-me",
+      "tags": [
+        "agent-ext",
+        "skills",
+        "planning"
+      ],
+      "verify": {
+        "kind": "skill"
+      },
+      "harnesses": {
+        "claude-code": {
+          "scriptable": true,
+          "method": "skills-registry"
+        },
+        "codex": {
+          "scriptable": true,
+          "method": "skills-registry"
+        },
+        "opencode": {
+          "scriptable": true,
+          "method": "skills-registry"
+        }
+      }
+    },
+    {
+      "id": "claude-mem",
+      "type": "extension",
+      "backend": "npx-installer",
+      "description": "Persistent memory across sessions — compresses transcripts into a searchable local store.",
+      "requires": [
+        "node"
+      ],
+      "repository": "thedotmack/claude-mem",
+      "package": "claude-mem",
+      "version": "latest",
+      "plugin": "claude-mem",
+      "tags": [
+        "agent-ext",
+        "memory"
+      ],
+      "verify": {
+        "kind": "plugin"
+      },
+      "installer": {
+        "install": "install",
+        "remove": "uninstall",
+        "remove_scope": "global",
+        "update": "update",
+        "target_flag": "--ide",
+        "args": [
+          "--provider",
+          "${AI_CLAUDE_MEM_PROVIDER}",
+          "--no-auto-start"
+        ],
+        "defaults": {
+          "AI_CLAUDE_MEM_PROVIDER": "claude"
+        },
+        "env": {
+          "CLAUDE_MEM_ONLINE_OPTIN": "false"
+        }
+      },
+      "harnesses": {
+        "claude-code": {
+          "scriptable": true,
+          "method": "npx",
+          "arg": "claude-code"
+        },
+        "codex": {
+          "scriptable": true,
+          "method": "npx",
+          "arg": "codex-cli"
+        },
+        "opencode": {
+          "scriptable": true,
+          "method": "npx",
+          "arg": "opencode"
         }
       }
     },

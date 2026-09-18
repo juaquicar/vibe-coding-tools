@@ -21,7 +21,7 @@
 #   type          tool | harness | extension | mcp | meta
 #   backend       apt | apt-repo | npm-global | cargo | uv-tool | pipx
 #                 | github-release | script | claude-plugin | agent-skill
-#                 | mcp-server | none
+#                 | npx-installer | mcp-server | none
 #   description   one line, shown by `ai list` and `ai search`
 #   version       "latest" or an exact pin (lockfile overrides both)
 #   requires      dependency ids; resolved topologically before install
@@ -29,6 +29,8 @@
 #   sudo          true when the backend needs root
 #   relogin       true when a shell restart / re-login is needed afterwards
 #   tags          free-form grouping
+#   skill         for agent-skill: which skill inside a multi-skill repository
+#   installer     for npx-installer: subcommands, target flag and literal argv
 #   verify        how to check presence — see kinds below
 #   harnesses     per-agent support matrix (extensions and MCP servers only)
 #
@@ -36,6 +38,7 @@
 #   command : run verify.cmd, regex-match its output against verify.match
 #   path    : test -e verify.path
 #   plugin  : ask the harness adapter whether the plugin is registered
+#   skill   : ask the harness adapter whether the skill is installed
 #   mcp     : ask the harness adapter whether the server is registered
 #   none    : unverifiable; trust the state file
 #
@@ -71,10 +74,13 @@ profiles:
       - github-cli
       - claude-code
       - codex
+      - codex-config
       - opencode
       - codegraph
       - superpowers
       - caveman
+      - grill-me
+      - claude-mem
       - context7
 
   django:
@@ -96,10 +102,13 @@ profiles:
       - django-toolchain
       - claude-code
       - codex
+      - codex-config
       - opencode
       - codegraph
       - superpowers
       - caveman
+      - grill-me
+      - claude-mem
       - context7
 
   gis:
@@ -121,10 +130,13 @@ profiles:
       - gis-toolchain
       - claude-code
       - codex
+      - codex-config
       - opencode
       - codegraph
       - superpowers
       - caveman
+      - grill-me
+      - claude-mem
       - context7
 
   full:
@@ -148,10 +160,13 @@ profiles:
       - gis-toolchain
       - claude-code
       - codex
+      - codex-config
       - opencode
       - codegraph
       - superpowers
       - caveman
+      - grill-me
+      - claude-mem
       - context7
 
 components:
@@ -537,6 +552,79 @@ components:
     # On Codex and OpenCode the claude-plugin backend delegates to the
     # cross-agent skills registry, which is the only mechanism that spans all
     # three. Caveman's own curl|bash installer is deliberately not used.
+
+  - id: codex-config
+    type: extension
+    backend: none
+    description: Codex model defaults and the fast/arch/power/fix profiles (codex -p <name>).
+    requires: [codex]
+    tags: [agent-ext, config]
+    verify:
+      kind: path
+      path: $HOME/.codex/config.toml
+    # The settings themselves live in harnesses/codex-defaults.toml; the
+    # post-install hook merges them in, preserving MCP servers and anything
+    # else already in the file. It is its own component rather than a hook on
+    # `codex` so it can be applied to a machine where the CLI is already
+    # installed: `ai install codex-config`.
+    #
+    # The verify is deliberately weak — it asks whether Codex has a config at
+    # all, not whether every key matches. Set AI_CODEX_DEFAULTS=0 to opt out.
+
+  - id: grill-me
+    type: extension
+    backend: agent-skill
+    description: Relentless interview that stress-tests a plan or design before you build it.
+    requires: [node]
+    repository: mattpocock/skills
+    skill: grill-me
+    tags: [agent-ext, skills, planning]
+    verify:
+      kind: skill
+    harnesses:
+      claude-code: { scriptable: true, method: skills-registry }
+      codex: { scriptable: true, method: skills-registry }
+      opencode: { scriptable: true, method: skills-registry }
+    # mattpocock/skills publishes 38 skills. `.skill` pins the one this
+    # component actually means, so the registry does not install the other 37.
+
+  - id: claude-mem
+    type: extension
+    backend: npx-installer
+    description: Persistent memory across sessions — compresses transcripts into a searchable local store.
+    requires: [node]
+    repository: thedotmack/claude-mem
+    package: claude-mem
+    version: latest
+    plugin: claude-mem
+    tags: [agent-ext, memory]
+    verify:
+      kind: plugin
+    installer:
+      install: install
+      remove: uninstall
+      remove_scope: global
+      update: update
+      target_flag: --ide
+      args: ['--provider', '${AI_CLAUDE_MEM_PROVIDER}', '--no-auto-start']
+      defaults:
+        AI_CLAUDE_MEM_PROVIDER: claude
+      env:
+        CLAUDE_MEM_ONLINE_OPTIN: 'false'
+    harnesses:
+      claude-code: { scriptable: true, method: npx, arg: claude-code }
+      codex: { scriptable: true, method: npx, arg: codex-cli }
+      opencode: { scriptable: true, method: npx, arg: opencode }
+    # `npm install -g claude-mem` installs the library only — upstream says so
+    # in its own README. The integration (lifecycle hooks, agent config, local
+    # worker) only happens through `npx claude-mem install --ide <agent>`.
+    #
+    # `--provider claude` keeps the install non-interactive: without an explicit
+    # provider the installer wants a browser sign-in. It makes memory
+    # summarisation run on your Anthropic plan; override with
+    # AI_CLAUDE_MEM_PROVIDER=host|gemini|openrouter before installing.
+    # `--no-auto-start` means no background worker is spawned behind your back;
+    # the post-install hook prints how to start it.
 
   - id: context7
     type: mcp

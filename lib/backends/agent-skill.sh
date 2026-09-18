@@ -9,9 +9,13 @@
 
 backend_agent_skill_install() {
   local id="$1" harness="${2:-}"
-  local repo
+  local repo skill
 
   repo="$(manifest_repo "$id")"
+  # `.skill` names one skill inside a multi-skill repository. Without it the
+  # registry installs every skill the repo publishes, which is a very different
+  # component from the one the manifest row claims to be.
+  skill="$(manifest_field "$id" '.skill' '')"
   [[ -n "$repo" ]] || die "component '${id}': .repository is required for agent-skill"
   [[ -n "$harness" ]] || die "component '${id}': agent-skill is harness-scoped"
 
@@ -32,16 +36,22 @@ backend_agent_skill_install() {
   node_runtime_activate || true
   have npx || die "npx not found; install the 'node' component first"
 
-  log_info "adding skill ${repo} to $(harness_name "$harness")"
-  harness_skill_add "$harness" "$repo" || return $?
+  if [[ -n "$skill" ]] && harness_skill_has "$harness" "$skill"; then
+    log_debug "${id}: already installed in ${harness}"
+    return 0
+  fi
+
+  log_info "adding skill ${repo}${skill:+ (${skill})} to $(harness_name "$harness")"
+  harness_skill_add "$harness" "$repo" "$skill" || return $?
   rollback_record "noop skill ${repo} added to ${harness}"
 }
 
 backend_agent_skill_remove() {
-  local id="$1" harness="${2:-}"
+  local id="$1" harness="${2:-}" skill
+  skill="$(manifest_field "$id" '.skill' "$id")"
   harness_detect "$harness" || return 0
-  harness_skill_has "$harness" "$id" || return 0
-  harness_skill_remove "$harness" "$id"
+  harness_skill_has "$harness" "$skill" || return 0
+  harness_skill_remove "$harness" "$skill"
 }
 
 backend_agent_skill_update() {

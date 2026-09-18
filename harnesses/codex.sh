@@ -148,9 +148,12 @@ codex_plugin_has() {
 
 # --- Skills ------------------------------------------------------------------
 
+# codex_skill_add <repo> [skill]
 codex_skill_add() {
-  local repo="$1"
-  run_user npx --yes skills@latest add "$repo" --global --agent codex --yes
+  local repo="$1" skill="${2:-}"
+  local -a args=(--yes skills@latest add "$repo" --global --agent codex --yes)
+  [[ -n "$skill" ]] && args+=(--skill "$skill")
+  run_user npx "${args[@]}"
 }
 
 codex_skill_remove() {

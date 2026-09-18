@@ -119,22 +119,34 @@ opencode_plugin_remove() {
 }
 
 opencode_plugin_has() {
-  local plugin="$1" cfg
+  local plugin="$1" cfg dir
   cfg="$(opencode_config_path)"
+  dir="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
+  # A plugin entry is either a package spec ("name", "name@source") or a path
+  # to a local bundle ("./plugins/name.js"), which is what file-dropping
+  # installers such as claude-mem register.
   if [[ -f "$cfg" ]] && [[ "$(harness_jsonc_read "$cfg" | jq -r --arg p "$plugin" '
       [(.plugin // [])[], (.plugins // [])[]]
-      | any(type == "string" and (. == $p or startswith($p + "@")))
+      | any(type == "string"
+            and (. == $p
+                 or startswith($p + "@")
+                 or endswith("/" + $p + ".js")
+                 or endswith("/" + $p + ".mjs")))
     ')" == "true" ]]; then
     return 0
   fi
-  [[ -e "${XDG_CONFIG_HOME:-$HOME/.config}/opencode/plugins/${plugin}" ]]
+  [[ -e "$dir/plugins/${plugin}" || -e "$dir/plugins/${plugin}.js" ||
+    -e "$dir/plugins/${plugin}.mjs" ]]
 }
 
 # --- Skills ------------------------------------------------------------------
 
+# opencode_skill_add <repo> [skill]
 opencode_skill_add() {
-  local repo="$1"
-  run_user npx --yes skills@latest add "$repo" --global --agent opencode --yes
+  local repo="$1" skill="${2:-}"
+  local -a args=(--yes skills@latest add "$repo" --global --agent opencode --yes)
+  [[ -n "$skill" ]] && args+=(--skill "$skill")
+  run_user npx "${args[@]}"
 }
 
 opencode_skill_remove() {

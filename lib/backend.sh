@@ -94,6 +94,11 @@ component_verify() {
         harness_plugin_has "$harness" "$plugin"
       fi
       ;;
+    skill)
+      local skill
+      skill="$(manifest_field "$id" '.skill' "$id")"
+      harness_skill_has "$harness" "$skill"
+      ;;
     mcp)
       local server
       server="$(manifest_field "$id" '.server' "$id")"

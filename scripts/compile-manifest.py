@@ -49,12 +49,13 @@ VALID_BACKENDS = {
     "script",
     "claude-plugin",
     "agent-skill",
+    "npx-installer",
     "mcp-server",
     "none",
 }
 
 VALID_TYPES = {"tool", "harness", "extension", "mcp", "meta"}
-VALID_VERIFY_KINDS = {"command", "path", "plugin", "mcp", "none"}
+VALID_VERIFY_KINDS = {"command", "path", "plugin", "skill", "mcp", "none"}
 
 # Verification commands are the only manifest strings that reach a shell. They
 # are restricted to a read-only probe shape: a bare command plus flag-like
@@ -111,7 +112,7 @@ def validate(doc: dict) -> None:
 
         # Harness-scoped backends must declare their support matrix, otherwise
         # `ai doctor` cannot tell "not installed" from "not supported here".
-        if backend in {"claude-plugin", "agent-skill", "mcp-server"}:
+        if backend in {"claude-plugin", "agent-skill", "npx-installer", "mcp-server"}:
             if not comp.get("harnesses"):
                 fail(f"{cid}: backend '{backend}' requires a 'harnesses' matrix")
             for hid, hcfg in comp["harnesses"].items():
@@ -122,6 +123,28 @@ def validate(doc: dict) -> None:
                         f"{cid}.harnesses.{hid}: a non-scriptable entry must carry a "
                         "'note' telling the user exactly what to do by hand"
                     )
+
+        if backend == "npx-installer":
+            if not comp.get("package"):
+                fail(f"{cid}: backend 'npx-installer' requires a 'package'")
+            installer = comp.get("installer") or {}
+            if installer.get("target_flag"):
+                for hid, hcfg in comp["harnesses"].items():
+                    if hcfg.get("scriptable") and not hcfg.get("arg"):
+                        fail(
+                            f"{cid}.harnesses.{hid}: installer.target_flag is set, so "
+                            "'arg' must name this agent's installer target"
+                        )
+            scope = installer.get("remove_scope", "agent")
+            if scope not in {"agent", "global"}:
+                fail(f"{cid}.installer.remove_scope must be 'agent' or 'global'")
+            for field in ("install", "remove", "update"):
+                value = installer.get(field)
+                if value is not None and not isinstance(value, str):
+                    fail(f"{cid}.installer.{field} must be a single subcommand string")
+            for token in installer.get("args") or []:
+                if not isinstance(token, str):
+                    fail(f"{cid}.installer.args must be a list of literal argv strings")
 
         if backend == "script" and not comp.get("script", {}).get("url"):
             fail(f"{cid}: backend 'script' requires script.url")
